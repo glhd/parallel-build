@@ -2,6 +2,7 @@
 set -u
 
 _cwd=$(dirname "$0")
+# shellcheck source=../parallel.sh
 . "$_cwd/../parallel.sh"
 
 chain "composer dependencies" \
