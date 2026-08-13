@@ -124,7 +124,7 @@ Describe 'parallel.sh'
 				#|. "$LIB"
 				#|chain "slow" \
 				#|	"touch '$WORK/slow-started'" \
-				#|	"until [ -f '$WORK/done' ]; do sleep 1; done" \
+				#|	"until [ -f '$WORK/done' ] || [ ! -d '$WORK' ]; do sleep 1; done" \
 				#|	"touch '$WORK/slow-finished'"
 				#|chain "quick" \
 				#|	"until [ -f '$WORK/slow-started' ]; do sleep 1; done" \
@@ -249,13 +249,38 @@ Describe 'parallel.sh'
 				#|printf '%s\n' "$$" >"$WORK/pid"
 				#|chain "slow" \
 				#|	"touch '$WORK/started'" \
-				#|	"until [ -f '$WORK/done' ]; do sleep 1; done"
+				#|	"until [ -f '$WORK/done' ] || [ ! -d '$WORK' ]; do sleep 1; done"
 				#|run
 			End
 
 			When call driver_interrupted
 			The status should equal 130
 			The directory "$(reported_workdir)" should not be exist
+		End
+
+		# A signal is the one way out that the cancel path never sees, so
+		# unless the library stops the chains itself an interrupted build
+		# leaves whatever it started still running. That is its own bug —
+		# the point of Ctrl-C is that the compiler stops too — and it is
+		# also what stalls CI: a macOS runner does not finish a step while
+		# a process the step started is alive, so a chain nobody killed
+		# holds the job open until it times out, minutes after the suite
+		# has passed.
+		It 'stops the chain it started when it is interrupted'
+			Data
+				#|set -eu
+				#|. "$LIB"
+				#|printf '%s\n' "$$" >"$WORK/pid"
+				#|chain "slow" \
+				#|	"touch '$WORK/started'" \
+				#|	"until [ -f '$WORK/done' ] || [ ! -d '$WORK' ]; do sleep 1; done"
+				#|printf '%s\n' "$!" >"$WORK/chainpid"
+				#|run
+			End
+
+			When call driver_interrupted
+			The status should equal 130
+			The value "$(chain_state)" should equal "stopped"
 		End
 	End
 End

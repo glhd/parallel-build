@@ -5,3 +5,6 @@ shell=sh
 # Follow `. parallel.sh` into the library when a source= directive says where
 # it is, so the example build script is checked as a whole.
 external-sources=true
+
+# Resolve `source=` directives relative to the script that carries them.
+source-path=SCRIPTDIR

@@ -48,6 +48,18 @@ start_driver() {
 	"$SHELLSPEC_SHELL" "$WORK/driver.sh" 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
 }
 
+# The same driver, but for the background, and `exec` is the whole point of
+# the second copy. `start_driver &` forks a subshell that then waits on the
+# driver, so $! names the subshell and not the driver: killing it reaps the
+# wrapper and leaves the driver running, holding the pipes shellspec reads
+# the example's output from. The watchdog below then has nothing to kill,
+# and one driver that hangs hangs the whole suite instead of failing its own
+# example. Replacing the subshell with the driver keeps the pid the same one
+# the watchdog was given.
+spawn_driver() {
+	exec "$SHELLSPEC_SHELL" "$WORK/driver.sh" 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
+}
+
 detach() {
 	"$@" >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
 }
@@ -56,12 +68,17 @@ detach() {
 # being tested. $LIB and $WORK are in its environment.
 #
 # When the driver is finished, $WORK/done appears. A fake command that has to
-# stay busy for a while waits on that file, so a stray goes away on its own
-# shortly after the example that made it.
+# stay busy for a while waits for that file to arrive or for $WORK itself to
+# go, so a stray goes away on its own shortly after the example that made it.
+# Waiting on the file alone is not enough: teardown takes $WORK away moments
+# after the marker lands, and a fake that was mid-nap then waits forever for
+# a file that can no longer appear. The macOS runner does not finish a step
+# while a process it started is still alive, so one immortal stray is a
+# fifteen-minute job timeout there, long after the suite itself has passed.
 driver() {
 	cat >"$WORK/driver.sh"
-	rm -f "$WORK/done"
-	start_driver &
+	rm -f "$WORK/done" "$WORK/timed-out"
+	spawn_driver &
 	_child=$!
 	detach watchdog "$_child"
 	_watchdog=$!
@@ -69,6 +86,7 @@ driver() {
 	_status=$?
 	: >"$WORK/done"
 	stop "$_watchdog"
+	report_timeout
 	return "$_status"
 }
 
@@ -81,14 +99,23 @@ driver() {
 # driver publishes its own pid for the helper to aim at.
 driver_interrupted() {
 	cat >"$WORK/driver.sh"
-	rm -f "$WORK/done"
+	rm -f "$WORK/done" "$WORK/timed-out"
 	detach interrupter
 	_interrupter=$!
 	start_driver
 	_status=$?
 	: >"$WORK/done"
 	stop "$_interrupter"
+	report_timeout
 	return "$_status"
+}
+
+# Say so when a driver had to be killed. Without this the example fails on a
+# status it never chose, which reads like the library returning the wrong
+# code rather than the driver never returning at all.
+report_timeout() {
+	[ -e "$WORK/timed-out" ] || return 0
+	printf 'driver did not finish within %ss and was killed\n' "$DRIVER_TIMEOUT" >&2
 }
 
 # Shut a helper down and reap it. Left running, it would still be a child of
@@ -100,15 +127,25 @@ stop() {
 	return 0
 }
 
+# The driver here runs in the foreground, so this helper is the only thing
+# that can end it: a driver that never reports it started, or that sits
+# through the interrupt, has to be killed anyway rather than left to run.
 interrupter() {
-	await_file "$WORK/started" || return 0
-	kill -INT "$(cat "$WORK/pid")" 2>/dev/null
-	countdown && kill -9 "$(cat "$WORK/pid" 2>/dev/null)" 2>/dev/null
+	if await_file "$WORK/started"; then
+		kill -INT "$(cat "$WORK/pid")" 2>/dev/null
+	elif [ -e "$WORK/done" ]; then
+		return 0 # it finished on its own; there is nothing to interrupt
+	fi
+	countdown || return 0
+	: >"$WORK/timed-out"
+	kill -9 "$(cat "$WORK/pid" 2>/dev/null)" 2>/dev/null
 }
 
 # Kill a driver that outstays its welcome.
 watchdog() {
-	countdown && kill -9 "$1" 2>/dev/null
+	countdown || return 0
+	: >"$WORK/timed-out"
+	kill -9 "$1" 2>/dev/null
 }
 
 # Sleep out the timeout a second at a time, stopping early once the driver is
@@ -138,6 +175,24 @@ await_file() {
 # The temp directory a finished driver reported through $WORK/workdir.
 reported_workdir() {
 	cat "$WORK/workdir"
+}
+
+# Whether the chain a finished driver reported through $WORK/chainpid is
+# still running. A process that has just been killed can sit as a zombie
+# until the shell that started it goes and init reaps it, so this waits a
+# few seconds for an answer rather than believing the first one.
+chain_state() {
+	_pid=$(cat "$WORK/chainpid")
+	_waited=0
+	while kill -0 "$_pid" 2>/dev/null; do
+		if [ "$_waited" -ge 5 ]; then
+			printf 'running'
+			return 0
+		fi
+		_waited=$((_waited + 1))
+		sleep 1
+	done
+	printf 'stopped'
 }
 
 lines_in() {

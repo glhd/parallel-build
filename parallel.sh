@@ -34,8 +34,26 @@ _finish() {
 	0) ;;
 	*) _ec=$_signal ;;
 	esac
+	_stop_chains
 	_cleanup
 	exit "$_ec"
+}
+
+# Take the chains down on the way out. Nothing else does: a chain is its own
+# process, so an interrupted build that only cleaned up after itself would
+# leave the compiler it started still running, and a script that gave up
+# before it reached `run` would leave the lot. Every chain that reported a
+# status is finished already, and killing a process that has gone is not an
+# error worth reporting, so this cannot fail and cannot abandon the trap
+# that called it.
+_stop_chains() {
+	i=1
+	while [ "$i" -le "$_count" ]; do
+		if [ ! -f "$_work/$i.code" ] && [ -f "$_work/$i.pid" ]; then
+			kill "$(cat "$_work/$i.pid")" 2>/dev/null || :
+		fi
+		i=$((i + 1))
+	done
 }
 
 trap '_finish $?' EXIT
