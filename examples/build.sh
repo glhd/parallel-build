@@ -1,10 +1,14 @@
 #!/bin/sh
 set -u
 
-. "$(dirname "$0")/../parallel.sh"
+_cwd=$(dirname "$0")
+. "$_cwd/../parallel.sh"
 
-chain "composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader"
+chain "composer dependencies" \
+	"composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader"
 
-chain "npm ci --audit false" "npm run build"
+chain "build assets" \
+	"npm ci --audit false" \
+	"npm run build"
 
 run
