@@ -1,0 +1,7 @@
+# Everything here is POSIX sh, including the spec files: they run under dash,
+# ksh93, mksh, busybox ash and zsh in CI, not just bash.
+shell=sh
+
+# Follow `. parallel.sh` into the library when a source= directive says where
+# it is, so the example build script is checked as a whole.
+external-sources=true

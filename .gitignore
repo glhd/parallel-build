@@ -1,0 +1,6 @@
+# make install-dev puts ShellSpec here
+/.tools/
+
+# shellspec --kcov
+/coverage/
+/report/
