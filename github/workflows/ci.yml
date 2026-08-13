@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install linters
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck shfmt devscripts
+      - run: make lint
+
+  linux:
+    name: linux (${{ matrix.shell }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shell: dash
+            package: dash
+            path: /bin/dash
+          - shell: bash
+            package: bash
+            path: /bin/bash
+          - shell: ksh93
+            package: ksh
+            path: /bin/ksh93
+          - shell: mksh
+            package: mksh
+            path: /bin/mksh
+          - shell: zsh
+            package: zsh
+            path: /bin/zsh
+          - shell: busybox ash
+            package: busybox-static
+            path: /usr/local/bin/ash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ${{ matrix.shell }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${{ matrix.package }}
+      # busybox picks its applet from argv[0], so it needs a name to be run under.
+      - name: Link busybox ash
+        if: matrix.package == 'busybox-static'
+        run: sudo ln -sf /bin/busybox /usr/local/bin/ash
+      - run: make install-dev
+      - run: make test SHELLSPEC_FLAGS="--shell ${{ matrix.path }}"
+
+  # BSD mktemp and BSD sleep, and a /bin/sh that is bash 3.2 in disguise.
+  macos:
+    name: macos (${{ matrix.shell }})
+    runs-on: macos-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [/bin/sh, /bin/bash]
+    steps:
+      - uses: actions/checkout@v4
+      - run: make install-dev
+      - run: make test SHELLSPEC_FLAGS="--shell ${{ matrix.shell }}"
+
+  freebsd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: pkg install -y curl git
+          # /usr/bin/make here is BSD make, which the Makefile also works with.
+          run: |
+            make install-dev
+            make test SHELLSPEC_FLAGS="--shell /bin/sh"
