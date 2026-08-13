@@ -72,6 +72,28 @@ jobs:
       - run: make install-dev
       - run: make test SHELLSPEC_FLAGS="--shell ${{ matrix.shell }}"
 
+  # The benchmarks are a report, and a hosted runner is a noisy place to
+  # take timings on, so the job only fails when a scenario was not faster in
+  # chains than in order at all. That is a claim no amount of a busy runner
+  # should be able to break, and the table lands in the run summary either
+  # way.
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Benchmark
+        run: make bench 2>&1 | tee bench.txt
+      - name: Publish the table
+        if: always()
+        run: |
+          [ -f bench.txt ] || exit 0
+          {
+            echo '```'
+            cat bench.txt
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
   freebsd:
     runs-on: ubuntu-latest
     timeout-minutes: 30

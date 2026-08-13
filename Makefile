@@ -7,15 +7,16 @@ SHELLSPEC = .tools/bin/shellspec
 # Extra flags for the suite, e.g. `make test SHELLSPEC_FLAGS="--shell dash"`.
 SHELLSPEC_FLAGS =
 
-# The library and the example: POSIX sh, formatted, no bashisms.
-SCRIPTS = parallel.sh examples/build.sh
+# The library, the example and the benchmarks: POSIX sh, formatted, no
+# bashisms.
+SCRIPTS = parallel.sh examples/build.sh bench/bench.sh
 
 # The spec files are POSIX sh as well and get checked, but not formatted:
 # shellspec's Describe, It and End are ordinary commands, so shfmt sees no
 # nesting to keep and flattens the whole file to one column.
 SPECS = spec/parallel_spec.sh spec/spec_helper.sh
 
-.PHONY: check lint test install-dev
+.PHONY: check lint test bench install-dev
 
 check: lint test
 
@@ -27,6 +28,11 @@ lint:
 test:
 	@[ -x $(SHELLSPEC) ] || { echo "$(SHELLSPEC) is missing: make install-dev" >&2; exit 1; }
 	$(SHELLSPEC) $(SHELLSPEC_FLAGS)
+
+# Not part of `check`: it is minutes of sleeping, and it reports rather than
+# asserts. Takes REPS, SCALE and SHELL_UNDER_TEST from the environment.
+bench:
+	./bench/bench.sh
 
 # Into .tools, which is gitignored.
 install-dev:
