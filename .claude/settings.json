@@ -1,0 +1,14 @@
+{
+  "extraKnownMarketplaces": {
+    "glhd-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "glhd/claude-plugins"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "plain-prose@glhd-plugins": true
+  },
+  "outputStyle": "Plain Prose"
+}
