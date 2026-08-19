@@ -208,22 +208,19 @@ process_state() {
 }
 
 # Whether the shell under test leaves a background job in the shell's own
-# process group, which is the library's own test for whether it can take a
-# chain's children down with the chain. Job control is optional in a
-# non-interactive shell: dash and busybox ash take `set -m` and ignore it,
-# and zsh refuses it outright without a terminal.
+# process group, in which case cancelling a chain cannot take the chain's
+# children with it. Job control is optional in a non-interactive shell: dash
+# and busybox ash take `set -m` and start the job in the shell's group
+# anyway, and zsh refuses it outright without a terminal.
+#
+# The library is asked rather than a copy of its probe run here: a copy can
+# answer differently from the real one — the FreeBSD runner had them
+# disagree — and then an example is skipped that should have run, or run
+# that should have been skipped, and the failure reads as a broken kill.
 no_process_groups() {
 	# shellcheck disable=SC2016 # the probe is the other shell's to expand
-	! "$SHELLSPEC_SHELL" -c '
-		set -m 2>/dev/null || exit 1
-		sleep 1 &
-		p=$!
-		kill -0 -- "-$p" 2>/dev/null
-		ok=$?
-		kill -9 -- "-$p" 2>/dev/null || kill -9 "$p" 2>/dev/null
-		wait "$p" 2>/dev/null
-		exit "$ok"
-	' 2>/dev/null
+	[ "$("$SHELLSPEC_SHELL" -c '. "$LIB"; _probe_groups; printf %s "$_groups"' \
+		2>/dev/null)" != yes ]
 }
 
 lines_in() {

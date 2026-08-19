@@ -113,39 +113,42 @@ _kill_chain() {
 # leave it out: dash and busybox ash take `set -m` and start the job in the
 # shell's own group anyway, and zsh refuses the option outright unless it has
 # a terminal to hand the group the foreground with.
-_probe_groups() {
-	case $- in
-	*m*) _monitor=yes ;;
-	*) _monitor=no ;;
-	esac
-	# The probe's own kill is job control's business to announce, and some
-	# shells do announce it, so the probe reports through its status alone
-	# and anything it has to say goes nowhere.
-	if _group_probe 2>/dev/null; then _groups=yes; else _groups=no; fi
-}
-
-# The probe runs in a subshell because `set` is a special builtin, and a
-# special builtin that fails takes a non-interactive shell down with it:
-# zsh, which refuses -m without a terminal, would end the build script here
-# rather than report that it cannot do it.
+#
+# The probe starts its job here, in the shell that will be starting the
+# chains, and not in a subshell: a subshell is a different place to ask from
+# and gives different answers. mksh says the group is there and then will not
+# kill it, and FreeBSD's sh answered for a subshell what was not true of the
+# script — which is a probe reporting on itself rather than on the chains.
 #
 # A job that was given its own group leads that group, so a group with its
 # pid for an id exists. A job that was not is in the shell's group, and no
 # other group can have that id while the job itself holds the pid, so asking
 # after the group is the whole of the test and `ps` is not needed for it.
-_group_probe() (
-	set -m 2>/dev/null || exit 1
-	sleep 1 &
+_probe_groups() {
+	case $- in
+	*m*) _monitor=yes ;;
+	*) _monitor=no ;;
+	esac
+	_groups=no
+
+	# Whether the option can be set at all is a question for a subshell,
+	# because `set` is a special builtin and a special builtin that fails
+	# takes a non-interactive shell down with it: zsh, which refuses -m
+	# without a terminal, would end the build script rather than answer.
+	(set -m) 2>/dev/null || return 0
+	set -m 2>/dev/null # dash says out loud that it has no terminal for it
+
+	# Braces and a redirection for the same reason `chain` has them: a shell
+	# with job control announces the jobs it starts, and this one is not the
+	# script's news. SIGKILL because the probe must not be able to hang.
+	{ sleep 1 & } >/dev/null 2>&1
 	_p=$!
-	kill -0 -- "-$_p" 2>/dev/null
-	_ok=$?
-	# SIGKILL, because the probe must not be able to hang or to leave the
-	# nap behind: mksh takes the group kill in a subshell without the job
-	# dying of it, and would then wait out the second it asked for.
+	if kill -0 -- "-$_p" 2>/dev/null; then _groups=yes; fi
 	kill -9 -- "-$_p" 2>/dev/null || kill -9 "$_p" 2>/dev/null
-	wait "$_p" 2>/dev/null # zsh complains about a job still running at exit
-	exit "$_ok"
-)
+	wait "$_p" 2>/dev/null || :
+
+	case $_monitor in no) set +m 2>/dev/null ;; esac
+}
 
 trap '_finish $?' EXIT
 trap '_signal=130; _finish 130' INT
@@ -176,11 +179,14 @@ chain() {
 			trap - INT TERM # don't inherit the parent's handlers
 
 			# The chain has the group; it does not need job control of
-			# its own, and is worse off with it. A chain that inherited
-			# it would give a group of its own to every background
-			# command it ran, putting them outside the group that
-			# cancelling kills.
-			case $- in *m*) set +m ;; esac
+			# its own, and is worse off with it. A chain that kept it
+			# would give a group of its own to what it started, putting
+			# it outside the group that cancelling kills. Off on what
+			# the library turned on, not on what `$-` reports: dash
+			# leaves `m` out of `$-` with monitor mode set, and the
+			# ash-derived shells it is one of are exactly the ones this
+			# would be wrong about.
+			case $_groups in yes) set +m ;; esac
 
 			code=0
 			# Always leave a status behind, even if a command calls
