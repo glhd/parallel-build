@@ -12,9 +12,12 @@
 
 Describe 'parallel.sh'
 	Describe 'chains that succeed'
-		It 'runs two chains and reports both, in declaration order'
+		# Output is labelled and printed as it arrives unless a build asks
+		# for it grouped, so this is what a build sees by default.
+		It 'labels every line with the chain it came from'
 			Data
 				#|set -eu
+				#|STREAM_SEP='|'
 				#|. "$LIB"
 				#|chain "first" "printf 'one output\n'"
 				#|chain "second" "printf 'two output\n'"
@@ -23,12 +26,19 @@ Describe 'parallel.sh'
 
 			When call driver
 			The status should equal 0
-			The output should match pattern "*--- first*one output*--- second*two output*"
+			The output should include " first | one output"
+			The output should include "second | two output"
+			# Then a line a chain, in declaration order. Which of the two
+			# labelled lines lands first is up to the chains, but the
+			# report is always the last two.
+			The line 4 of output should equal "--- first"
+			The line 5 of output should equal "--- second"
 		End
 
 		It 'handles a single chain with a single command'
 			Data
 				#|set -eu
+				#|STREAM_SEP='|'
 				#|. "$LIB"
 				#|chain "only" "printf 'the one output\n'"
 				#|run
@@ -36,8 +46,8 @@ Describe 'parallel.sh'
 
 			When call driver
 			The status should equal 0
-			The line 2 of output should equal "--- only"
-			The line 3 of output should equal "the one output"
+			The line 1 of output should equal "only | the one output"
+			The line 3 of output should equal "--- only"
 		End
 	End
 
@@ -136,7 +146,6 @@ Describe 'parallel.sh'
 			The status should equal 4
 			The file "$WORK/slow-started" should be exist
 			The file "$WORK/slow-finished" should not be exist
-			The output should include "... slow"
 			The output should include "[.] slow cancelled"
 		End
 
@@ -166,10 +175,57 @@ Describe 'parallel.sh'
 		End
 	End
 
-	Describe 'output grouping'
+	# STREAM=0 holds each chain's output and prints it in one block instead,
+	# in declaration order, which is what a build that would rather read the
+	# whole of a chain at once asks for.
+	Describe 'grouped output'
+		It "prints each chain's output in one block"
+			Data
+				#|set -eu
+				#|STREAM=0
+				#|. "$LIB"
+				#|chain "first" "printf 'one output\n'"
+				#|chain "second" "printf 'two output\n'"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			The output should match pattern "*--- first*one output*--- second*two output*"
+		End
+
+		It 'marks a chain that failed and one that was cancelled'
+			Data
+				#|set -eu
+				#|STREAM=0
+				#|. "$LIB"
+				#|chain "slow" \
+				#|	"touch '$WORK/slow-started'" \
+				#|	"until [ -f '$WORK/done' ] || [ ! -d '$WORK' ]; do sleep 1; done"
+				#|chain "broken" \
+				#|	"until [ -f '$WORK/slow-started' ]; do sleep 1; done" \
+				#|	"printf 'the reason\n'; exit 2"
+				#|run
+			End
+
+			When call driver
+			The status should equal 2
+			# Grouped output is in declaration order all the way down, so
+			# every line of it is known. Lines rather than a pattern: a
+			# bracket is a set in a glob, `[!]` a set that opens by
+			# negating itself, and ksh93 will not match a pattern of
+			# several parts against a subject this long anyway.
+			The line 2 of output should equal "... slow"
+			The line 3 of output should equal "[.] slow cancelled"
+			The line 5 of output should equal "[!] broken"
+			The line 6 of output should equal "the reason"
+			The line 7 of output should equal "[!] broken exited 2"
+		End
+
 		It "collects a command's stdout and stderr into its own group"
 			Data
 				#|set -eu
+				#|STREAM=0
 				#|. "$LIB"
 				#|chain "noisy" "printf 'went to stdout\n'; printf 'went to stderr\n' >&2"
 				#|chain "quiet" "printf 'other chain\n'"
@@ -185,6 +241,7 @@ Describe 'parallel.sh'
 		It 'passes command strings through untouched'
 			Data
 				#|set -eu
+				#|STREAM=0
 				#|. "$LIB"
 				#|cd "$WORK"
 				#|touch alpha beta
@@ -309,13 +366,13 @@ Describe 'parallel.sh'
 		End
 	End
 
-	# STREAM=1 prints each line as it arrives, under the label of the chain
-	# it came from, instead of holding the output and grouping it at the end.
+	# What `run` does unless a build asks for grouping: each line as it
+	# arrives, under the label of the chain it came from.
 	Describe 'streaming'
 		It 'labels every line with the chain it came from'
 			Data
 				#|set -eu
-				#|STREAM=1 STREAM_SEP='|'
+				#|STREAM_SEP='|'
 				#|. "$LIB"
 				#|chain "npm" "printf 'one\n'; printf 'two\n'"
 				#|chain "composer" "printf 'three\n'"
@@ -334,7 +391,7 @@ Describe 'parallel.sh'
 		It 'pads the labels to the same width'
 			Data
 				#|set -eu
-				#|STREAM=1 STREAM_SEP='|'
+				#|STREAM_SEP='|'
 				#|. "$LIB"
 				#|chain "a" "printf 'short\n'"
 				#|chain "a-much-longer-one" "printf 'long\n'"
@@ -354,7 +411,7 @@ Describe 'parallel.sh'
 		It 'prints a line while the chains are still running'
 			Data
 				#|set -eu
-				#|STREAM=1 STREAM_SEP='|'
+				#|STREAM_SEP='|'
 				#|. "$LIB"
 				#|chain "first" "printf 'the first line\n'"
 				#|chain "second" \
@@ -375,7 +432,7 @@ Describe 'parallel.sh'
 		It 'waits for a half-written line to be finished'
 			Data
 				#|set -eu
-				#|STREAM=1 STREAM_SEP='|'
+				#|STREAM_SEP='|'
 				#|. "$LIB"
 				#|chain "half" "printf 'a line'; sleep 1; printf ' in two writes\n'"
 				#|run
@@ -389,7 +446,7 @@ Describe 'parallel.sh'
 		It 'prints a last line that never got its newline'
 			Data
 				#|set -eu
-				#|STREAM=1 STREAM_SEP='|'
+				#|STREAM_SEP='|'
 				#|. "$LIB"
 				#|chain "abrupt" "printf 'no newline here'"
 				#|run
@@ -405,7 +462,7 @@ Describe 'parallel.sh'
 		It 'reports how each chain ended, a line each'
 			Data
 				#|set -eu
-				#|STREAM=1 STREAM_SEP='|'
+				#|STREAM_SEP='|'
 				#|. "$LIB"
 				#|chain "fine" "printf 'all good\n'"
 				#|chain "slow" \
@@ -421,14 +478,30 @@ Describe 'parallel.sh'
 			The status should equal 3
 			The output should include "fine | all good"
 			The output should include "--- fine"
-			The output should include "... slow cancelled"
+			The output should include "[.] slow cancelled"
 			The output should include "[!] broken exited 3"
+		End
+
+		It "labels what a command writes to stderr as well"
+			Data
+				#|set -eu
+				#|STREAM_SEP='|'
+				#|. "$LIB"
+				#|chain "noisy" "printf 'to stdout\n'; printf 'to stderr\n' >&2"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			The output should include "noisy | to stdout"
+			The output should include "noisy | to stderr"
+			The stderr should equal ""
 		End
 
 		It 'takes the bar between label and line from STREAM_SEP'
 			Data
 				#|set -eu
-				#|STREAM=1 STREAM_SEP='>>'
+				#|STREAM_SEP='>>'
 				#|. "$LIB"
 				#|chain "one" "printf 'a line\n'"
 				#|run

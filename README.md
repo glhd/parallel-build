@@ -3,9 +3,9 @@
 [![CI](https://github.com/glhd/parallel-build/actions/workflows/ci.yml/badge.svg)](https://github.com/glhd/parallel-build/actions/workflows/ci.yml)
 
 `parallel.sh` runs chains of commands at the same time, stops everything at
-the first failure, and prints each chain's output in one block instead of
-interleaved — or labelled, line by line, as it arrives. It is POSIX sh, one
-file, and nothing else, so it runs in a build container as it is.
+the first failure, and labels every line it prints with the chain it came
+from, as that chain writes it. It is POSIX sh, one file, and nothing else,
+so it runs in a build container as it is.
 
 Before, where `npm` waits on `composer` for no reason:
 
@@ -69,22 +69,25 @@ gantt
     lint, exits 1      :crit, 00:00:00, 00:00:10
 ```
 
-When something fails, the failure is at the bottom and the rest is grouped
-above it:
+Every line says which chain wrote it, the labels are right aligned so the
+bars line up, and the last word is a line a chain saying how it ended:
 
 ```
+composer install │ Installing dependencies
+       npm build │ added 214 packages
+composer install │ Generating optimized autoload files
+       npm build │ building for production...
+       npm build │ ERR! Build failed in 4.21s
+
 --- composer install
-Installing dependencies
-Generating autoload files
-
-[!] npm build
-added 214 packages
-building for production...
 [!] npm build exited 1
-
-... assets
 [.] assets cancelled
 ```
+
+A line is printed once it is whole, so a command that writes a line in two
+writes still gets one line, and the chain it belongs to is the only thing
+that decides where it goes. `STREAM=0` holds the output and groups it
+instead, which is [below](#stream).
 
 ## Install
 
@@ -108,10 +111,11 @@ order, each one only if the one before it succeeded, and the chain stops at
 the first failure. Each command is a string, evaluated by the shell, so
 pipes, redirects and `&&` work inside one.
 
-`run` waits for every chain, prints their output in the order they were
-declared, and returns the exit code of the chain that failed, or 0. The
-first failure cancels the chains still running. Because `run` returns that
-code, it can be the last line of a build script:
+`run` waits for every chain, prints what they write under the label of the
+chain that wrote it, ends with a line a chain saying how each one ended, and
+returns the exit code of the chain that failed, or 0. The first failure
+cancels the chains still running. Because `run` returns that code, it can be
+the last line of a build script:
 
 ```sh
 run
@@ -141,39 +145,37 @@ to do it.
 
 ## STREAM
 
-`run` holds each chain's output and prints it grouped, which means nothing
-is printed until a chain has finished. Set `STREAM` and it prints every line
-as it arrives instead, under the label of the chain it came from:
+Output is labelled and printed as it arrives. `STREAM=0` holds each chain's
+output instead and prints it in one block a chain, in declaration order,
+with the failure at the bottom — nothing is printed until a chain has
+finished, and nothing a chain wrote is anywhere but under its own heading:
 
 ```sh
-STREAM=1 ./build.sh
+STREAM=0 ./build.sh
 ```
 
 ```
-     npm │ added 214 packages in 8s
-composer │ Installing dependencies from lock file
-     npm │ vite v5.4.2 building for production...
-composer │ Generating optimized autoload files
-     npm │ built in 4.21s
+--- composer install
+Installing dependencies
+Generating optimized autoload files
 
---- composer
---- npm
+[!] npm build
+added 214 packages
+building for production...
+[!] npm build exited 1
+
+... assets
+[.] assets cancelled
 ```
 
-The labels are right aligned to the longest of them, so the bars line up. A
-line is printed once it is whole, so a chain that writes one in two writes
-still gets one line, and the report at the end is one line a chain — how
-each one ended, in declaration order — because the output itself has already
-gone by.
-
-`STREAM_SEP` is the bar. It defaults to `│` where the locale says the
-terminal is UTF-8, and to `|` where it does not:
+`STREAM_SEP` is the bar between a label and its line. It defaults to `│`
+where the locale says the terminal is UTF-8, and to `|` where it does not:
 
 ```sh
-STREAM=1 STREAM_SEP='|' ./build.sh
+STREAM_SEP='|' ./build.sh
 ```
 
-Streamed output is read on the same poll that watches for finished chains,
+Labelled output is read on the same poll that watches for finished chains,
 so a line can be up to `POLL` behind the command that wrote it.
 
 ## Benchmarks

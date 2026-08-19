@@ -7,14 +7,15 @@
 #
 # Commands in a chain run in order and stop at the first failure. Separate
 # chains run at the same time. The first failure anywhere cancels the rest.
-# `run` blocks, prints each chain's output in declaration order, and returns
-# the exit code of the chain that failed.
+# `run` blocks, prints what the chains write under the label of the chain
+# that wrote it, and returns the exit code of the chain that failed.
 #
-# With STREAM set, output is labelled and printed as it arrives instead.
+# With STREAM=0 the output is held instead, and printed in one block a chain
+# in declaration order.
 
 POLL=${POLL:-0.1}           # seconds between checks
 POLL_WHOLE=${POLL_WHOLE:-1} # used instead if this sleep rejects fractions
-STREAM=${STREAM:-0}         # 1 to label and print output as it arrives
+STREAM=${STREAM:-1}         # 0 to hold the output and print it grouped
 
 # The bar between a label and its line. A box drawing character reads as
 # three bytes of noise in a terminal that is not expecting UTF-8, and the
@@ -278,7 +279,7 @@ _cancel() {
 
 # Whether output is streamed as it arrives rather than held and grouped.
 _streaming() {
-	case ${STREAM:-0} in
+	case ${STREAM:-1} in
 	'' | 0 | no | off | false) return 1 ;;
 	*) return 0 ;;
 	esac
@@ -379,10 +380,15 @@ _report() {
 		if _streaming; then
 			# The output has already gone by, in the order it happened, so
 			# what is left to report is a line a chain saying how it ended.
-			printf '%s %s' "$mark" "$label"
-			[ -n "$code" ] && [ "$code" -ne 0 ] && printf ' exited %s' "$code"
-			[ -f "$_work/$i.cancelled" ] && printf ' cancelled'
-			printf '\n'
+			# They are the lines the grouped report ends a chain on, so a
+			# build that greps for one finds it either way.
+			if [ -f "$_work/$i.cancelled" ]; then
+				printf '[.] %s cancelled\n' "$label"
+			elif [ -n "$code" ] && [ "$code" -ne 0 ]; then
+				printf '[!] %s exited %s\n' "$label" "$code"
+			else
+				printf '%s %s\n' "$mark" "$label"
+			fi
 		else
 			printf '\n%s %s\n' "$mark" "$label"
 			cat "$_work/$i.log"
