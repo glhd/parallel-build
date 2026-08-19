@@ -4,8 +4,8 @@
 
 `parallel.sh` runs chains of commands at the same time, stops everything at
 the first failure, and prints each chain's output in one block instead of
-interleaved. It is POSIX sh, one file, and nothing else, so it runs in a
-build container as it is.
+interleaved — or labelled, line by line, as it arrives. It is POSIX sh, one
+file, and nothing else, so it runs in a build container as it is.
 
 Before, where `npm` waits on `composer` for no reason:
 
@@ -128,8 +128,53 @@ first poll, after which polling falls back to whole seconds. Set `POLL` for
 a different interval and `POLL_WHOLE` for a different fallback:
 
 ```sh
-POLL=0.5 . ./parallel.sh
+POLL=0.5
+. ./parallel.sh
 ```
+
+Set it before sourcing rather than in front of the `.`, which is a special
+built-in: an assignment in front of one persists in a POSIX shell and does
+not in bash or zsh, so `POLL=0.5 . ./parallel.sh` is two different things
+depending on where it runs. The environment works everywhere too, so
+`POLL=0.5 ./build.sh` on a script that sources the library is the other way
+to do it.
+
+## STREAM
+
+`run` holds each chain's output and prints it grouped, which means nothing
+is printed until a chain has finished. Set `STREAM` and it prints every line
+as it arrives instead, under the label of the chain it came from:
+
+```sh
+STREAM=1 ./build.sh
+```
+
+```
+     npm │ added 214 packages in 8s
+composer │ Installing dependencies from lock file
+     npm │ vite v5.4.2 building for production...
+composer │ Generating optimized autoload files
+     npm │ built in 4.21s
+
+--- composer
+--- npm
+```
+
+The labels are right aligned to the longest of them, so the bars line up. A
+line is printed once it is whole, so a chain that writes one in two writes
+still gets one line, and the report at the end is one line a chain — how
+each one ended, in declaration order — because the output itself has already
+gone by.
+
+`STREAM_SEP` is the bar. It defaults to `│` where the locale says the
+terminal is UTF-8, and to `|` where it does not:
+
+```sh
+STREAM=1 STREAM_SEP='|' ./build.sh
+```
+
+Streamed output is read on the same poll that watches for finished chains,
+so a line can be up to `POLL` behind the command that wrote it.
 
 ## Benchmarks
 
@@ -162,8 +207,8 @@ best of three runs:
   cannot finish before its longest chain does, so the most chains can do is
   hide the rest behind it.
 
-Eight chains that do nothing at all finish in 0.15s: one `mktemp`, eight
-forks, and a poll or two. That is about what the library costs a build with
+Eight chains that do nothing at all finish in 0.15s: one `mktemp`, one job
+control probe, eight forks, and a poll or two. That is about what the library costs a build with
 nothing to gain.
 
 The table is a report on shapes, not a measurement of any real build. A
@@ -185,10 +230,18 @@ too noisy to be held to one.
 
 ## Caveats
 
-`kill` stops a cancelled chain's shell, not its grandchildren. A command
-that spawned its own children can leave one behind that outlives the chain
-it belonged to. In a build container that exits anyway this does not matter;
-in a long-lived shell it will.
+Cancelling a chain kills its process group where the shell can give a chain
+one of its own, which takes down what the chain started however deep it
+goes. Job control is what puts a chain in a group, and a non-interactive
+shell is not obliged to have any, so the library starts one job under
+`set -m` at the first `chain` and asks whether that job got a group to
+itself. bash, ksh93 and mksh give it one, and zsh does when it has a
+terminal. dash and busybox ash accept `set -m` and start the job in the
+shell's own group regardless, and there cancelling still kills the chain's
+shell and not its grandchildren: a command that spawned its own children can
+leave one behind that outlives the chain it belonged to. In a build
+container that exits anyway this does not matter; in a long-lived shell it
+will.
 
 Fractional `sleep` is not in POSIX, though both GNU coreutils and BSD accept
 it. Whole seconds are the fallback, not the default, so a build on a shell
@@ -201,8 +254,8 @@ under zsh, removes it.
 
 The library has no `local`, because POSIX sh has none. It keeps its own
 state in names starting with `_`, but its loops use `i`, `n`, `cmd`, `code`,
-`label` and `mark`, and sourcing it will clobber those in the calling
-script.
+`label`, `mark`, `seen`, `line` and `pending`, and sourcing it will clobber
+those in the calling script.
 
 ## Prior art
 
