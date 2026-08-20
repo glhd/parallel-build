@@ -178,13 +178,25 @@ reported_workdir() {
 }
 
 # Whether the chain a finished driver reported through $WORK/chainpid is
-# still running. A process that has just been killed can sit as a zombie
-# until the shell that started it goes and init reaps it, so this waits a
-# few seconds for an answer rather than believing the first one.
+# still running.
 chain_state() {
-	_pid=$(cat "$WORK/chainpid")
+	process_state "$WORK/chainpid"
+}
+
+# The same for any pid a driver left in a file, which is how a chain's own
+# children are asked after. A process that has just been killed can sit as a
+# zombie until whatever adopted it reaps it, so this waits a few seconds for
+# an answer rather than believing the first one, and reads a pid that is
+# still answering as stopped once it has become a zombie: a zombie is a
+# process that has died, whatever `kill -0` makes of it. Not every `ps` here
+# takes -p, and the ones that do not simply leave the wait to decide.
+process_state() {
+	_pid=$(cat "$1")
 	_waited=0
 	while kill -0 "$_pid" 2>/dev/null; do
+		case $(ps -o stat= -p "$_pid" 2>/dev/null) in
+		*Z*) break ;;
+		esac
 		if [ "$_waited" -ge 5 ]; then
 			printf 'running'
 			return 0
@@ -193,6 +205,22 @@ chain_state() {
 		sleep 1
 	done
 	printf 'stopped'
+}
+
+# Whether the shell under test leaves a background job in the shell's own
+# process group, in which case cancelling a chain cannot take the chain's
+# children with it. Job control is optional in a non-interactive shell: dash
+# and busybox ash take `set -m` and start the job in the shell's group
+# anyway, and zsh refuses it outright without a terminal.
+#
+# The library is asked rather than a copy of its probe run here: a copy can
+# answer differently from the real one — the FreeBSD runner had them
+# disagree — and then an example is skipped that should have run, or run
+# that should have been skipped, and the failure reads as a broken kill.
+no_process_groups() {
+	# shellcheck disable=SC2016 # the probe is the other shell's to expand
+	[ "$("$SHELLSPEC_SHELL" -c '. "$LIB"; _probe_groups; printf %s "$_groups"' \
+		2>/dev/null)" != yes ]
 }
 
 lines_in() {

@@ -3,9 +3,9 @@
 [![CI](https://github.com/glhd/parallel-build/actions/workflows/ci.yml/badge.svg)](https://github.com/glhd/parallel-build/actions/workflows/ci.yml)
 
 `parallel.sh` runs chains of commands at the same time, stops everything at
-the first failure, and prints each chain's output in one block instead of
-interleaved. It is POSIX sh, one file, and nothing else, so it runs in a
-build container as it is.
+the first failure, and labels every line it prints with the chain it came
+from, as that chain writes it. It is POSIX sh, one file, and nothing else,
+so it runs in a build container as it is.
 
 Before, where `npm` waits on `composer` for no reason:
 
@@ -69,22 +69,25 @@ gantt
     lint, exits 1      :crit, 00:00:00, 00:00:10
 ```
 
-When something fails, the failure is at the bottom and the rest is grouped
-above it:
+Every line says which chain wrote it, and the labels are right aligned so
+the bars line up. A build that works prints its output and stops there; when
+one fails, the last word is what failed and what was cancelled with it:
 
 ```
---- composer install
-Installing dependencies
-Generating autoload files
+composer install │ Installing dependencies
+       npm build │ added 214 packages
+composer install │ Generating optimized autoload files
+       npm build │ building for production...
+       npm build │ ERR! Build failed in 4.21s
 
-[!] npm build
-added 214 packages
-building for production...
 [!] npm build exited 1
-
-... assets
 [.] assets cancelled
 ```
+
+A line is printed once it is whole, so a command that writes a line in two
+writes still gets one line, and the chain it belongs to is the only thing
+that decides where it goes. `STREAM=0` holds the output and groups it
+instead, which is [below](#stream).
 
 ## Install
 
@@ -108,10 +111,11 @@ order, each one only if the one before it succeeded, and the chain stops at
 the first failure. Each command is a string, evaluated by the shell, so
 pipes, redirects and `&&` work inside one.
 
-`run` waits for every chain, prints their output in the order they were
-declared, and returns the exit code of the chain that failed, or 0. The
-first failure cancels the chains still running. Because `run` returns that
-code, it can be the last line of a build script:
+`run` waits for every chain, prints what they write under the label of the
+chain that wrote it, ends by naming the chain that failed and the chains
+cancelled with it, and returns the exit code of the chain that failed, or 0.
+The first failure cancels the chains still running. Because `run` returns
+that code, it can be the last line of a build script:
 
 ```sh
 run
@@ -128,8 +132,51 @@ first poll, after which polling falls back to whole seconds. Set `POLL` for
 a different interval and `POLL_WHOLE` for a different fallback:
 
 ```sh
-POLL=0.5 . ./parallel.sh
+POLL=0.5
+. ./parallel.sh
 ```
+
+Set it before sourcing rather than in front of the `.`, which is a special
+built-in: an assignment in front of one persists in a POSIX shell and does
+not in bash or zsh, so `POLL=0.5 . ./parallel.sh` is two different things
+depending on where it runs. The environment works everywhere too, so
+`POLL=0.5 ./build.sh` on a script that sources the library is the other way
+to do it.
+
+## STREAM
+
+Output is labelled and printed as it arrives. `STREAM=0` holds each chain's
+output instead and prints it in one block a chain, in declaration order,
+with the failure at the bottom — nothing is printed until a chain has
+finished, and nothing a chain wrote is anywhere but under its own heading:
+
+```sh
+STREAM=0 ./build.sh
+```
+
+```
+--- composer install
+Installing dependencies
+Generating optimized autoload files
+
+[!] npm build
+added 214 packages
+building for production...
+[!] npm build exited 1
+
+... assets
+[.] assets cancelled
+```
+
+`STREAM_SEP` is the bar between a label and its line. It defaults to `│`
+where the locale says the terminal is UTF-8, and to `|` where it does not:
+
+```sh
+STREAM_SEP='|' ./build.sh
+```
+
+Labelled output is read on the same poll that watches for finished chains,
+so a line can be up to `POLL` behind the command that wrote it.
 
 ## Benchmarks
 
@@ -162,8 +209,8 @@ best of three runs:
   cannot finish before its longest chain does, so the most chains can do is
   hide the rest behind it.
 
-Eight chains that do nothing at all finish in 0.15s: one `mktemp`, eight
-forks, and a poll or two. That is about what the library costs a build with
+Eight chains that do nothing at all finish in 0.15s: one `mktemp`, one job
+control probe, eight forks, and a poll or two. That is about what the library costs a build with
 nothing to gain.
 
 The table is a report on shapes, not a measurement of any real build. A
@@ -185,10 +232,18 @@ too noisy to be held to one.
 
 ## Caveats
 
-`kill` stops a cancelled chain's shell, not its grandchildren. A command
-that spawned its own children can leave one behind that outlives the chain
-it belonged to. In a build container that exits anyway this does not matter;
-in a long-lived shell it will.
+Cancelling a chain kills its process group where the shell can give a chain
+one of its own, which takes down what the chain started however deep it
+goes. Job control is what puts a chain in a group, and a non-interactive
+shell is not obliged to have any, so the library starts one job under
+`set -m` at the first `chain` and asks whether that job got a group to
+itself. bash, ksh93 and mksh give it one, and zsh does when it has a
+terminal. dash and busybox ash accept `set -m` and start the job in the
+shell's own group regardless, and there cancelling still kills the chain's
+shell and not its grandchildren: a command that spawned its own children can
+leave one behind that outlives the chain it belonged to. In a build
+container that exits anyway this does not matter; in a long-lived shell it
+will.
 
 Fractional `sleep` is not in POSIX, though both GNU coreutils and BSD accept
 it. Whole seconds are the fallback, not the default, so a build on a shell
@@ -201,8 +256,8 @@ under zsh, removes it.
 
 The library has no `local`, because POSIX sh has none. It keeps its own
 state in names starting with `_`, but its loops use `i`, `n`, `cmd`, `code`,
-`label` and `mark`, and sourcing it will clobber those in the calling
-script.
+`label`, `mark`, `seen`, `line` and `pending`, and sourcing it will clobber
+those in the calling script.
 
 ## Prior art
 
