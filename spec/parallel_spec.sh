@@ -28,11 +28,10 @@ Describe 'parallel.sh'
 			The status should equal 0
 			The output should include " first | one output"
 			The output should include "second | two output"
-			# Then a line a chain, in declaration order. Which of the two
-			# labelled lines lands first is up to the chains, but the
-			# report is always the last two.
-			The line 4 of output should equal "--- first"
-			The line 5 of output should equal "--- second"
+			# And that is the whole of it. A chain that finished said so as
+			# it went, so there is nothing to add under its name at the end.
+			The output should not include "--- first"
+			The output should not include "--- second"
 		End
 
 		It 'handles a single chain with a single command'
@@ -47,7 +46,7 @@ Describe 'parallel.sh'
 			When call driver
 			The status should equal 0
 			The line 1 of output should equal "only | the one output"
-			The line 3 of output should equal "--- only"
+			The output should not include "--- only"
 		End
 	End
 
@@ -457,9 +456,10 @@ Describe 'parallel.sh'
 			The line 1 of output should equal "abrupt | no newline here"
 		End
 
-		# The output has already gone by, so the report at the end is one
-		# line a chain, in declaration order, saying how each one ended.
-		It 'reports how each chain ended, a line each'
+		# What is left to say when the output has gone by: the chain that
+		# failed, and the chains that were cancelled with it. Nothing about
+		# the chain that finished, which said so as it went.
+		It 'ends on what failed and what was cancelled with it'
 			Data
 				#|set -eu
 				#|STREAM_SEP='|'
@@ -477,7 +477,7 @@ Describe 'parallel.sh'
 			When call driver
 			The status should equal 3
 			The output should include "fine | all good"
-			The output should include "--- fine"
+			The output should not include "--- fine"
 			The output should include "[.] slow cancelled"
 			The output should include "[!] broken exited 3"
 		End

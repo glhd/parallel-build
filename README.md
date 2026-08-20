@@ -69,8 +69,9 @@ gantt
     lint, exits 1      :crit, 00:00:00, 00:00:10
 ```
 
-Every line says which chain wrote it, the labels are right aligned so the
-bars line up, and the last word is a line a chain saying how it ended:
+Every line says which chain wrote it, and the labels are right aligned so
+the bars line up. A build that works prints its output and stops there; when
+one fails, the last word is what failed and what was cancelled with it:
 
 ```
 composer install │ Installing dependencies
@@ -79,7 +80,6 @@ composer install │ Generating optimized autoload files
        npm build │ building for production...
        npm build │ ERR! Build failed in 4.21s
 
---- composer install
 [!] npm build exited 1
 [.] assets cancelled
 ```
@@ -112,10 +112,10 @@ the first failure. Each command is a string, evaluated by the shell, so
 pipes, redirects and `&&` work inside one.
 
 `run` waits for every chain, prints what they write under the label of the
-chain that wrote it, ends with a line a chain saying how each one ended, and
-returns the exit code of the chain that failed, or 0. The first failure
-cancels the chains still running. Because `run` returns that code, it can be
-the last line of a build script:
+chain that wrote it, ends by naming the chain that failed and the chains
+cancelled with it, and returns the exit code of the chain that failed, or 0.
+The first failure cancels the chains still running. Because `run` returns
+that code, it can be the last line of a build script:
 
 ```sh
 run

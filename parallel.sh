@@ -361,7 +361,11 @@ _emit() {
 }
 
 _report() {
-	_streaming && printf '\n'
+	# The blank line only when there is a line to put under it. A streamed
+	# run says nothing at the end about a chain that finished, and chains
+	# are cancelled by a failure and by nothing else, so a run that failed
+	# is exactly a run with something left to say.
+	_streaming && [ "$_failed" -ne 0 ] && printf '\n'
 	i=1
 	while [ "$i" -le "$_count" ]; do
 		label=$(cat "$_work/$i.label")
@@ -378,16 +382,16 @@ _report() {
 		fi
 
 		if _streaming; then
-			# The output has already gone by, in the order it happened, so
-			# what is left to report is a line a chain saying how it ended.
-			# They are the lines the grouped report ends a chain on, so a
-			# build that greps for one finds it either way.
+			# Only what the output did not already say. A chain that
+			# finished said so line by line as it went, and a heading with
+			# nothing under it is a heading for nothing; what is left is
+			# the chain that failed and the chains that went down with it.
+			# The lines are the ones the grouped report ends a chain on, so
+			# a build that greps for one finds it either way.
 			if [ -f "$_work/$i.cancelled" ]; then
 				printf '[.] %s cancelled\n' "$label"
 			elif [ -n "$code" ] && [ "$code" -ne 0 ]; then
 				printf '[!] %s exited %s\n' "$label" "$code"
-			else
-				printf '%s %s\n' "$mark" "$label"
 			fi
 		else
 			printf '\n%s %s\n' "$mark" "$label"
