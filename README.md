@@ -87,6 +87,10 @@ composer install │ Generating optimized autoload files
 [.] composer install cancelled
 ```
 
+In a terminal each label is in a colour of its own, one a chain, and
+everywhere else the output is the plain text above; [`COLOR`](#color) is the
+whole of it.
+
 A line is printed once it is whole, so a command that writes a line in two
 writes still gets one line, and the chain it belongs to is the only thing
 that decides where it goes. `STREAM=0` holds the output and groups it
@@ -218,6 +222,53 @@ STREAM_SEP='|' ./build.sh
 Labelled output is read on the same poll that watches for finished chains,
 so a line can be up to `POLL` behind the command that wrote it.
 
+## COLOR
+
+Each chain's label is given a colour of its own, so which chain a line came
+from reads without reading the label at all. The colour opens before the
+label and closes after the bar, in both layouts, so the bars make a column in
+the chain's colour and what a command wrote goes out exactly as it wrote it.
+The `[!]` and `[.]` in front of an outcome line stay plain: the colour says
+which chain, and nothing else.
+
+Colour is on where `run` prints to a terminal that says it has colours, and
+off everywhere else, so a build that pipes its output to a file or greps it
+for `[!]` gets the same plain text it got before. Four things have a say, and
+each one overrules the one before it:
+
+- **the terminal** — colour where stdout is one and terminfo reports eight
+  colours or more. `TERM` unset or `dumb` counts as none, and where there is
+  no `tput` to ask, a `TERM` that is set and is not `dumb` is taken at its
+  word.
+- **`NO_COLOR`** — set to anything at all, no colour. The convention the rest
+  of the build already follows.
+- **`FORCE_COLOR`** — set to anything but `0`, colour; set to `0`, none.
+  `FORCE_COLOR=0` is how a good many tools are told to stop, so it is read as
+  a refusal rather than as the name being set.
+- **`COLOR`** — `1` for colour, `0` for none, `auto` to leave it to the three
+  above. It is last because it is the only one of the four aimed at this
+  library:
+
+```sh
+COLOR=1 ./build.sh | tee build.log
+```
+
+`COLOR_PALETTE` is the colours themselves, a space separated list of SGR
+parameters, handed out in declaration order and started again from the top once a build has more chains
+than the palette has colours. It defaults to cyan, magenta, green, yellow and
+blue: the colours a terminal has had since it had eight of them, less red,
+which belongs to what a build says about its own failures, and less black and
+white, which the rest of the line already is.
+
+```sh
+COLOR_PALETTE='1;36 1;35 1;32' ./build.sh
+```
+
+An entry is whatever SGR takes, so `1;36` is bold cyan and `38;5;213` is one
+of the 256 a terminal that has them will answer to. Emptying the palette is
+another way of asking for no colour at all; leaving it unset is what gets the
+default.
+
 ## Benchmarks
 
 `bench/bench.sh` runs four builds twice each, once in declaration order the
@@ -289,8 +340,9 @@ Fractional `sleep` is not in POSIX, though both GNU coreutils and BSD accept
 it. Whole seconds are the fallback, not the default, so a build on a shell
 without fractional sleep finishes up to a second later than it might.
 
-The file itself is ASCII, comments included, and the box drawing bar is
-written as its bytes in the one place it is needed. A shell reads a script
+The file itself is ASCII, comments included, and the two characters in it
+that are not, the box drawing bar and the escape a colour begins with, are
+written as their bytes in the places they are needed. A shell reads a script
 through the locale, and a strict one in the C locale refuses a file carrying
 a byte sequence that locale cannot make a character of, which is the locale a
 build container has when nobody has set one. `make lint` checks it.

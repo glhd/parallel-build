@@ -20,6 +20,7 @@
 POLL=${POLL:-0.1}           # seconds between checks
 POLL_WHOLE=${POLL_WHOLE:-1} # used instead if this sleep rejects fractions
 STREAM=${STREAM:-1}         # 0 to hold the output and print it grouped
+COLOR=${COLOR:-auto}        # 1 to colour the labels, 0 to leave them plain
 
 # How many polls a cancelled chain gets to leave on its own before it is
 # killed outright, which comes to about GRACE times POLL seconds: ten of them
@@ -42,6 +43,19 @@ case ${LC_ALL:-${LC_CTYPE:-${LANG:-}}} in
 *) STREAM_SEP=${STREAM_SEP:-'|'} ;;
 esac
 
+# The colours the labels are given, as SGR parameters, one a chain in the
+# order the chains were declared and round again from the top once a build has
+# more chains than this has colours.
+#
+# Cyan, magenta, green, yellow, blue: the colours a terminal has had since it
+# had eight of them, less red, which belongs to what a build says about its
+# own failures, and less black and white, which the rest of the line already
+# is. An entry is whatever SGR takes, so `1;36` is bold cyan, and a palette
+# with nothing in it is another way of asking for no colour at all: the
+# default fills in for a palette that was never set, and not for one that was
+# deliberately emptied.
+COLOR_PALETTE=${COLOR_PALETTE-'36 35 32 33 34'}
+
 # Somewhere to keep what has to travel between the chains and the script that
 # started them: a chain's log, and the status it ended on. What only this
 # shell ever looks at, a chain's label and its pid, is kept in a variable.
@@ -62,14 +76,19 @@ _signal=0      # what to exit with if a signal arrives; 0 until one does
 _fractional='' # whether sleep takes POLL; unknown until the first nap
 _groups=''     # whether a chain can have its own process group; unknown
 _monitor=''    # whether the calling shell had job control on already
+_colored=''    # whether the labels are coloured; unknown until `run` looks
+_esc=''        # the escape character, once there is a use for one
+_reset=''      # what closes a colour, and nothing where there is none
 
 # POSIX sh has no arrays, so what a chain has one of is kept in a name with
 # the chain's number on the end of it, written and read through `eval`:
-# _label_1, _pid_1, _prefix_1, _seen_1. These are where one comes back out.
+# _label_1, _pid_1, _prefix_1, _seen_1, _color_1. These are where one comes
+# back out.
 _label=''
 _pid=''
 _prefix=''
 _seen=''
+_color=''
 
 _cleanup() { rm -rf "$_work" || :; }
 
@@ -288,6 +307,8 @@ chain() {
 }
 
 run() {
+	_probe_color
+	_colors
 	if _streaming; then _prefixes; fi
 	_await
 	_cancel
@@ -390,6 +411,117 @@ _streaming() {
 	esac
 }
 
+# Whether the labels are coloured, asked here at `run` rather than when the
+# library is sourced: the answer is about the stream `run` prints to, and a
+# build script is free to redirect its own output before it gets that far.
+#
+# Four things have a say, and each one overrules the one before it: the
+# terminal, then NO_COLOR, then FORCE_COLOR, then COLOR. The two environment
+# variables are the convention the rest of the tools in a build already
+# follow, and COLOR is last because it is the only one of the four aimed at
+# this library in particular.
+_probe_color() {
+	_colored=no
+
+	# A terminal, and one with colours to give. terminfo is what knows how
+	# many, and `tput` is what asks it; where there is no `tput`, a TERM
+	# that is set and is not `dumb` is taken at its word.
+	if [ -t 1 ]; then
+		if command -v tput >/dev/null 2>&1; then
+			_ncolors=$(tput colors 2>/dev/null) || _ncolors=0
+		else
+			_ncolors=8
+		fi
+		case ${TERM:-} in '' | dumb) _ncolors=0 ;; esac
+		# `tput` answers -1 for a terminal with no colours at all and
+		# nothing whatever for a TERM terminfo has not heard of, and
+		# `[` either compares numbers or fails, which under set -e
+		# takes the build with it.
+		case $_ncolors in '' | *[!0-9]*) _ncolors=0 ;; esac
+		if [ "$_ncolors" -ge 8 ]; then _colored=yes; fi
+	fi
+
+	# Set at all, whatever it is set to, which is what everything else
+	# reading it in the same build takes it as.
+	if [ -n "${NO_COLOR+set}" ]; then _colored=no; fi
+
+	# The same, but for the 0 that means the opposite: FORCE_COLOR=0 is how
+	# a good many tools are told to stop, and reading it as `start` on the
+	# grounds that the name is set would be exactly the wrong way round.
+	case ${FORCE_COLOR-} in
+	'') ;;
+	0) _colored=no ;;
+	*) _colored=yes ;;
+	esac
+
+	case $COLOR in
+	1 | yes | on | true | always) _colored=yes ;;
+	0 | no | off | false | never) _colored=no ;;
+	esac
+
+	case $_colored in
+	no) return 0 ;;
+	esac
+
+	# Written as its bytes for the same reason the bar above is: the escape
+	# character is not ASCII either, and this file has to stay readable as
+	# text by a shell in a locale that can make nothing of it.
+	_esc=$(printf '\033')
+	_reset="${_esc}[0m"
+}
+
+# One colour a chain, handed out here rather than at `chain` because whether
+# there are any to hand out is not known until `run` has looked at where the
+# output is going.
+#
+# The palette is a list in a string, POSIX sh having nothing better, and it is
+# taken a word at a time with the expansions that trim a string rather than by
+# letting the shell split it on the spaces: zsh does not split an unquoted
+# expansion at all, and what that came to was the whole palette arriving as
+# one colour. Refilled each time it runs out, which is what makes a sixth
+# chain cyan again.
+_colors() {
+	case $_colored in
+	no) return 0 ;;
+	esac
+
+	_rest=$COLOR_PALETTE
+	_trim_palette
+	# Nothing to hand out, so nothing is coloured, and the reset that
+	# closes a colour has nothing left to close.
+	if [ -z "$_rest" ]; then
+		_colored=no
+		_reset=''
+		return 0
+	fi
+
+	_i=1
+	while [ "$_i" -le "$_count" ]; do
+		if [ -z "$_rest" ]; then
+			_rest=$COLOR_PALETTE
+			_trim_palette
+		fi
+		_sgr=${_rest%% *}
+		_rest=${_rest#"$_sgr"}
+		_trim_palette
+		_open="${_esc}[${_sgr}m"
+		eval "_color_$_i=\$_open"
+		_i=$((_i + 1))
+	done
+}
+
+# The spaces off the front of what is left of the palette, so that the next
+# word off it is a colour and never the nothing between two spaces, and so
+# that a palette of nothing but spaces reads as the empty one it is.
+_trim_palette() {
+	while :; do
+		case $_rest in
+		' '*) _rest=${_rest# } ;;
+		*) return 0 ;;
+		esac
+	done
+}
+
 # The label a streamed line carries, one per chain, right aligned to the
 # longest of them so that the bars line up under each other. Every label is
 # known by the time `run` is called, which is the first moment a width can be
@@ -444,18 +576,22 @@ _emit() {
 	_n=$1
 	eval "_seen=\${_seen_$_n:-0}"
 	eval "_prefix=\$_prefix_$_n"
+	eval "_color=\${_color_$_n:-}"
 	tail -n "+$((_seen + 1))" "$_work/$_n.log" \
 		>|"$_work/$_n.chunk" 2>/dev/null || return 0
 
+	# The colour runs from the start of the label to the end of the bar and
+	# closes there, so the bars make a column in the chain's colour and
+	# what the command wrote goes out exactly as it wrote it.
 	_line=''
 	while IFS= read -r _line; do
-		printf '%s %s %s\n' "$_prefix" "$STREAM_SEP" "$_line"
+		printf '%s%s %s%s %s\n' "$_color" "$_prefix" "$STREAM_SEP" "$_reset" "$_line"
 		_seen=$((_seen + 1))
 		_line=''
 	done <"$_work/$_n.chunk"
 
 	if [ -n "$_line" ] && [ "$2" = last ]; then
-		printf '%s %s %s\n' "$_prefix" "$STREAM_SEP" "$_line"
+		printf '%s%s %s%s %s\n' "$_color" "$_prefix" "$STREAM_SEP" "$_reset" "$_line"
 		_seen=$((_seen + 1))
 	fi
 
@@ -488,15 +624,18 @@ _report() {
 # a chain on this line, so a build that greps for one finds it either way.
 _outcome() {
 	eval "_label=\$_label_$1"
+	eval "_color=\${_color_$1:-}"
+	# The label carries the colour and the mark in front of it does not:
+	# the colour says which chain, and nothing else, here as above.
 	if [ -f "$_work/$1.cancelled" ]; then
-		printf '[.] %s cancelled\n' "$_label"
+		printf '[.] %s%s%s cancelled\n' "$_color" "$_label" "$_reset"
 	elif [ -f "$_work/$1.killed" ]; then
-		printf '[!] %s killed\n' "$_label"
+		printf '[!] %s%s%s killed\n' "$_color" "$_label" "$_reset"
 	else
 		_code=$(cat "$_work/$1.code")
 		case $_code in
 		0) ;;
-		*) printf '[!] %s exited %s\n' "$_label" "$_code" ;;
+		*) printf '[!] %s%s%s exited %s\n' "$_color" "$_label" "$_reset" "$_code" ;;
 		esac
 	fi
 }
@@ -513,7 +652,8 @@ _group() {
 	fi
 
 	eval "_label=\$_label_$1"
-	printf '\n%s %s\n' "$_mark" "$_label"
+	eval "_color=\${_color_$1:-}"
+	printf '\n%s %s%s%s\n' "$_mark" "$_color" "$_label" "$_reset"
 	cat "$_work/$1.log"
 	# A chain whose last line never got a newline would otherwise have the
 	# line below glued onto the end of it.
