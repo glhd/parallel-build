@@ -480,6 +480,206 @@ Describe 'parallel.sh'
 		End
 	End
 
+	# A colour a chain, so a line's chain reads without reading the label.
+	# Nothing here has a terminal to be asked about, and every example
+	# below asks for colour outright and reads the escapes back out.
+	Describe 'colour'
+		It 'gives each chain a colour of its own'
+			Data
+				#|set -eu
+				#|STREAM_SEP='|'
+				#|COLOR=1
+				#|. "$LIB"
+				#|chain "one" "printf 'first line\n'"
+				#|chain "two" "printf 'second line\n'"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			# The colour opens before the label and closes after the bar,
+			# so what the command wrote is left exactly as it wrote it.
+			The output should include "$(sgr 36)one |$(sgr 0) first line"
+			The output should include "$(sgr 35)two |$(sgr 0) second line"
+		End
+
+		# The default, and what a build gets when it pipes its output
+		# somewhere or reads it back from a file: the plain text, which is
+		# also what greps for the outcome lines rely on.
+		It 'leaves the labels plain where the output is not a terminal'
+			Data
+				#|set -eu
+				#|STREAM_SEP='|'
+				#|. "$LIB"
+				#|chain "one" "printf 'a line\n'"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			The output should equal "one | a line"
+		End
+
+		It 'starts the palette again once it runs out'
+			Data
+				#|set -eu
+				#|STREAM_SEP='|'
+				#|COLOR=1
+				#|COLOR_PALETTE='31 32'
+				#|. "$LIB"
+				#|chain "one" "printf 'a\n'"
+				#|chain "two" "printf 'b\n'"
+				#|chain "the" "printf 'c\n'"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			The output should include "$(sgr 31)one |$(sgr 0) a"
+			The output should include "$(sgr 32)two |$(sgr 0) b"
+			The output should include "$(sgr 31)the |$(sgr 0) c"
+		End
+
+		# An entry is passed to the terminal as it stands, so anything SGR
+		# understands is a colour a build can ask for.
+		It 'takes the colours from COLOR_PALETTE'
+			Data
+				#|set -eu
+				#|STREAM_SEP='|'
+				#|COLOR=1
+				#|COLOR_PALETTE='1;35'
+				#|. "$LIB"
+				#|chain "one" "printf 'a line\n'"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			The output should equal "$(sgr '1;35')one |$(sgr 0) a line"
+		End
+
+		# A palette emptied on purpose is a build asking for no colour by
+		# another name, and there is nothing left for the reset to close.
+		It 'colours nothing where the palette is empty'
+			Data
+				#|set -eu
+				#|STREAM_SEP='|'
+				#|COLOR=1
+				#|COLOR_PALETTE=''
+				#|. "$LIB"
+				#|chain "one" "printf 'a line\n'"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			The output should equal "one | a line"
+		End
+
+		It 'colours the label a chain ended on, and not the mark'
+			Data
+				#|set -eu
+				#|STREAM_SEP='|'
+				#|COLOR=1
+				#|. "$LIB"
+				#|chain "one" "exit 3"
+				#|run || printf 'run returned %s\n' "$?"
+			End
+
+			When call driver
+			The status should equal 0
+			The output should include "[!] $(sgr 36)one$(sgr 0) exited 3"
+			The output should include "run returned 3"
+		End
+
+		It 'colours the heading of a grouped chain'
+			Data
+				#|set -eu
+				#|STREAM=0
+				#|COLOR=1
+				#|. "$LIB"
+				#|chain "one" "printf 'a line\n'"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			The output should include "--- $(sgr 36)one$(sgr 0)"
+			The output should include "a line"
+		End
+
+		# The four say so in this order, each overruling the one before it,
+		# and only the last two can be tested without a terminal to be
+		# asked about.
+		Describe 'what decides'
+			It 'is turned on by FORCE_COLOR where there is no terminal'
+				Data
+					#|set -eu
+					#|STREAM_SEP='|'
+					#|FORCE_COLOR=1
+					#|. "$LIB"
+					#|chain "one" "printf 'a line\n'"
+					#|run
+				End
+
+				When call driver
+				The status should equal 0
+				The output should equal "$(sgr 36)one |$(sgr 0) a line"
+			End
+
+			# FORCE_COLOR=0 is how a good many tools are told to stop, so
+			# it is read as a refusal and not as the name being set.
+			It 'is turned off by FORCE_COLOR=0'
+				Data
+					#|set -eu
+					#|STREAM_SEP='|'
+					#|COLOR=auto
+					#|FORCE_COLOR=0
+					#|. "$LIB"
+					#|chain "one" "printf 'a line\n'"
+					#|run
+				End
+
+				When call driver
+				The status should equal 0
+				The output should equal "one | a line"
+			End
+
+			It 'has FORCE_COLOR overrule NO_COLOR'
+				Data
+					#|set -eu
+					#|STREAM_SEP='|'
+					#|NO_COLOR=1
+					#|FORCE_COLOR=1
+					#|. "$LIB"
+					#|chain "one" "printf 'a line\n'"
+					#|run
+				End
+
+				When call driver
+				The status should equal 0
+				The output should equal "$(sgr 36)one |$(sgr 0) a line"
+			End
+
+			It 'has COLOR overrule both'
+				Data
+					#|set -eu
+					#|STREAM_SEP='|'
+					#|COLOR=0
+					#|NO_COLOR=1
+					#|FORCE_COLOR=1
+					#|. "$LIB"
+					#|chain "one" "printf 'a line\n'"
+					#|run
+				End
+
+				When call driver
+				The status should equal 0
+				The output should equal "one | a line"
+			End
+		End
+	End
+
 	# STREAM=0 holds each chain's output and prints it in one block instead,
 	# in declaration order, which is what a build that would rather read the
 	# whole of a chain at once asks for.

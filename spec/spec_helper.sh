@@ -230,6 +230,11 @@ no_process_groups() {
 		2>/dev/null)" != yes ]
 }
 
+# An SGR escape, written as its bytes because this file is ASCII too: the
+# escape character is not, and a spec has to be readable by a shell in a
+# locale that can make nothing of it.
+sgr() { printf '\033[%sm' "$1"; }
+
 lines_in() {
 	wc -l <"$1" | tr -d ' '
 }
