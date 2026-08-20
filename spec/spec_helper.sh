@@ -44,8 +44,13 @@ teardown_workdir() {
 # shellspec's own pipes, and it waits on them for as long as a stray holds
 # them open. Closing an fd that was never open is not an error in any of the
 # shells this suite runs under.
+#
+# The shell is left unquoted because it may come with options: `--shell "bash
+# --posix"` is a different shell from bash for everything the library cares
+# about, and splitting the words is how it gets to be one.
 start_driver() {
-	"$SHELLSPEC_SHELL" "$WORK/driver.sh" 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
+	# shellcheck disable=SC2086 # the shell under test may carry options
+	$SHELLSPEC_SHELL "$WORK/driver.sh" 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
 }
 
 # The same driver, but for the background, and `exec` is the whole point of
@@ -57,7 +62,8 @@ start_driver() {
 # example. Replacing the subshell with the driver keeps the pid the same one
 # the watchdog was given.
 spawn_driver() {
-	exec "$SHELLSPEC_SHELL" "$WORK/driver.sh" 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
+	# shellcheck disable=SC2086 # the shell under test may carry options
+	exec $SHELLSPEC_SHELL "$WORK/driver.sh" 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
 }
 
 detach() {
@@ -214,12 +220,13 @@ process_state() {
 # anyway, and zsh refuses it outright without a terminal.
 #
 # The library is asked rather than a copy of its probe run here: a copy can
-# answer differently from the real one — the FreeBSD runner had them
-# disagree — and then an example is skipped that should have run, or run
-# that should have been skipped, and the failure reads as a broken kill.
+# answer differently from the real one, as the FreeBSD runner had them do,
+# and then an example is skipped that should have run, or run that should
+# have been skipped, and the failure reads as a broken kill.
 no_process_groups() {
-	# shellcheck disable=SC2016 # the probe is the other shell's to expand
-	[ "$("$SHELLSPEC_SHELL" -c '. "$LIB"; _probe_groups; printf %s "$_groups"' \
+	# shellcheck disable=SC2016,SC2086 # the probe is the other shell's to
+	# expand, and that shell may carry options
+	[ "$($SHELLSPEC_SHELL -c '. "$LIB"; _probe_groups; printf %s "$_groups"' \
 		2>/dev/null)" != yes ]
 }
 
@@ -227,19 +234,31 @@ lines_in() {
 	wc -l <"$1" | tr -d ' '
 }
 
-# True when this shell runs `sleep` from PATH, which is what lets a spec put
-# a fake one in front of it. ksh93 has sleep as a builtin, and busybox ash
-# runs its own applet, so on those two a fake is simply not reachable.
-sleep_is_builtin() {
+# Whether this shell provides a command itself rather than running the one on
+# PATH, which is what says whether a spec can put a fake in front of it.
+# ksh93 has `sleep` built in and busybox resolves its own applets whatever
+# PATH says, so on those a fake is simply not reachable and the examples that
+# need one have nothing to test.
+#
+# The probe runs the command for real when the fake was not reached, so it
+# runs with TMPDIR pointing into the probe directory and everything it may
+# have made goes with it.
+provides_own() {
 	_probe=$(mktemp -d "${TMPDIR:-/tmp}/parallel-probe.XXXXXX")
-	printf '#!/bin/sh\nexit 42\n' >"$_probe/sleep"
-	chmod +x "$_probe/sleep"
+	printf '#!/bin/sh\nexit 42\n' >"$_probe/$1"
+	chmod +x "$_probe/$1"
 	(
 		PATH="$_probe:$PATH"
-		export PATH
-		sleep 0
-	)
+		TMPDIR="$_probe"
+		export PATH TMPDIR
+		shift
+		"$@"
+	) >/dev/null 2>&1
 	_probe_status=$?
 	rm -rf "$_probe"
 	[ "$_probe_status" -ne 42 ]
 }
+
+sleep_is_builtin() { provides_own sleep sleep 0; }
+
+mktemp_is_builtin() { provides_own mktemp mktemp -d; }

@@ -1,6 +1,6 @@
 #!/bin/sh
 # shellcheck shell=sh
-# Run chains of commands in parallel. POSIX sh — no bashisms, no arrays.
+# Run chains of commands in parallel. POSIX sh: no bashisms, no arrays.
 #
 #   chain <label> <command> [command...]
 #   run
@@ -12,27 +12,64 @@
 #
 # With STREAM=0 the output is held instead, and printed in one block a chain
 # in declaration order.
+#
+# Every name this file defines starts with an underscore, apart from `chain`
+# and `run`. A calling script and the commands in a chain are free to use
+# anything else; anything starting with an underscore is this file's.
 
 POLL=${POLL:-0.1}           # seconds between checks
 POLL_WHOLE=${POLL_WHOLE:-1} # used instead if this sleep rejects fractions
 STREAM=${STREAM:-1}         # 0 to hold the output and print it grouped
 
+# How many polls a cancelled chain gets to leave on its own before it is
+# killed outright, which comes to about GRACE times POLL seconds: ten of them
+# by default. A chain that ignores SIGTERM would otherwise hold `run` open for
+# ever, and a build that hangs is worse than one that is rude.
+GRACE=${GRACE:-100}
+
 # The bar between a label and its line. A box drawing character reads as
 # three bytes of noise in a terminal that is not expecting UTF-8, and the
 # locale is what says whether it is, so the default follows the locale and
 # an ASCII pipe stands in everywhere else.
+#
+# The character is written as its bytes rather than as itself, because this
+# file has to be readable as text by whatever shell sources it: yash in the
+# C locale refuses to read a script with a byte sequence the locale cannot
+# make a character of, and a build container without a locale set is exactly
+# where that happens. Everything here is ASCII for that reason.
 case ${LC_ALL:-${LC_CTYPE:-${LANG:-}}} in
-*[Uu][Tt][Ff]8* | *[Uu][Tt][Ff]-8*) STREAM_SEP=${STREAM_SEP:-'│'} ;;
+*[Uu][Tt][Ff]8* | *[Uu][Tt][Ff]-8*) STREAM_SEP=${STREAM_SEP:-$(printf '\342\224\202')} ;;
 *) STREAM_SEP=${STREAM_SEP:-'|'} ;;
 esac
 
-_work=$(mktemp -d)
+# Somewhere to keep what has to travel between the chains and the script that
+# started them: a chain's log, and the status it ended on. What only this
+# shell ever looks at, a chain's label and its pid, is kept in a variable.
+#
+# An
+# explicit template because BSD mktemp wants one, and a check because
+# without the directory every path below is a bare filename and the library
+# would quietly write its bookkeeping into the working directory.
+_work=$(mktemp -d "${TMPDIR:-/tmp}/parallel.XXXXXX") || _work=''
+if [ -z "$_work" ] || [ ! -d "$_work" ]; then
+	printf 'parallel.sh: could not create a temporary directory\n' >&2
+	exit 1
+fi
+
 _count=0
 _failed=0
 _signal=0      # what to exit with if a signal arrives; 0 until one does
 _fractional='' # whether sleep takes POLL; unknown until the first nap
 _groups=''     # whether a chain can have its own process group; unknown
 _monitor=''    # whether the calling shell had job control on already
+
+# POSIX sh has no arrays, so what a chain has one of is kept in a name with
+# the chain's number on the end of it, written and read through `eval`:
+# _label_1, _pid_1, _prefix_1, _seen_1. These are where one comes back out.
+_label=''
+_pid=''
+_prefix=''
+_seen=''
 
 _cleanup() { rm -rf "$_work" || :; }
 
@@ -66,12 +103,15 @@ _finish() {
 # error worth reporting, so this cannot fail and cannot abandon the trap
 # that called it.
 _stop_chains() {
-	i=1
-	while [ "$i" -le "$_count" ]; do
-		if [ ! -f "$_work/$i.code" ] && [ -f "$_work/$i.pid" ]; then
-			_kill_chain "$(cat "$_work/$i.pid")" now
+	_i=1
+	while [ "$_i" -le "$_count" ]; do
+		# No pid where the script gave up between counting a chain and
+		# starting it, and nothing to kill in that case either.
+		eval "_pid=\${_pid_$_i:-}"
+		if [ ! -f "$_work/$_i.code" ] && [ -n "$_pid" ]; then
+			_kill_chain "$_pid" now
 		fi
-		i=$((i + 1))
+		_i=$((_i + 1))
 	done
 }
 
@@ -90,22 +130,44 @@ _stop_chains() {
 # is anything in it worth killing.
 #
 # `now` skips that wait, and the exit trap uses it. Nothing that trap kills
-# will be printed, so it has nothing to keep quiet for, and a chain that has
-# made itself deaf to the signal must not be able to hold the trap — and the
-# script — open while it waits for a shell that is not going to go.
+# will be printed, so it has nothing to keep quiet for, and the script is
+# already leaving, so there is nothing left to wait for it to be quiet for
+# either.
 #
 # Neither kill can fail: cancelling races the chain finishing on its own,
 # and this is called from the exit trap, which a failure would abandon.
 _kill_chain() {
 	kill "$1" 2>/dev/null || :
-	case $_groups in
-	yes)
-		case $2 in
-		quietly) wait "$1" 2>/dev/null || : ;;
-		esac
-		kill -- "-$1" 2>/dev/null || :
-		;;
+	case $2 in
+	quietly) _await_exit "$1" ;;
 	esac
+	case $_groups in
+	yes) kill -- "-$1" 2>/dev/null || : ;;
+	esac
+}
+
+# Wait for a chain's shell to go, but not for ever. A chain that ignores
+# SIGTERM, whether it is a build step with a shutdown handler of its own or
+# one that has simply gone deaf, would otherwise hold `run` open with no way
+# out but Ctrl-C, so it gets GRACE polls and then the signal no process can
+# ignore.
+#
+# The kill is inside the loop, where the process was alive a moment ago,
+# rather than after it, where the chain may have gone and been reaped and
+# its pid handed to somebody else. `wait` afterwards reaps ours, and is the
+# reason `kill -0` keeps answering for a chain that is finished but not yet
+# collected.
+_await_exit() {
+	_left=$GRACE
+	while kill -0 "$1" 2>/dev/null; do
+		if [ "$_left" -le 0 ]; then
+			kill -9 "$1" 2>/dev/null || :
+			break
+		fi
+		_nap
+		_left=$((_left - 1))
+	done
+	wait "$1" 2>/dev/null || :
 }
 
 # Whether this shell will put a background job in a process group of its own,
@@ -119,7 +181,7 @@ _kill_chain() {
 # chains, and not in a subshell: a subshell is a different place to ask from
 # and gives different answers. mksh says the group is there and then will not
 # kill it, and FreeBSD's sh answered for a subshell what was not true of the
-# script — which is a probe reporting on itself rather than on the chains.
+# script, which is a probe reporting on itself rather than on the chains.
 #
 # A job that was given its own group leads that group, so a group with its
 # pid for an id exists. A job that was not is in the shell's group, and no
@@ -156,9 +218,14 @@ trap '_signal=130; _finish 130' INT
 trap '_signal=143; _finish 143' TERM
 
 chain() {
+	if [ "$#" -eq 0 ]; then
+		printf 'parallel.sh: chain needs a label\n' >&2
+		return 2
+	fi
+
 	_count=$((_count + 1))
-	n=$_count
-	printf '%s' "$1" >"$_work/$n.label"
+	_n=$_count
+	eval "_label_$_n=\$1"
 	shift
 
 	# Job control decides which process group a job starts in, and decides it
@@ -175,6 +242,14 @@ chain() {
 	# chain's, so it is this shell's stdout that has to point elsewhere while
 	# the chain starts. The chain's own output goes to its log either way, and
 	# a fork that fails still has stderr to say so on.
+	#
+	# stdin comes from /dev/null, and is the one thing here that is not about
+	# a shell being awkward. A background job in a shell without job control
+	# gets /dev/null anyway, and one in a shell with job control keeps the
+	# script's stdin and will read it: what that came to was a chain eating
+	# the input of the script that started it, on every shell with job
+	# control and on none of the ones without. Nothing a chain runs has any
+	# business reading the build's stdin, and now none of them can.
 	{
 		(
 			trap - INT TERM # don't inherit the parent's handlers
@@ -189,34 +264,34 @@ chain() {
 			# would be wrong about.
 			case $_groups in yes) set +m ;; esac
 
-			code=0
-			# Always leave a status behind, even if a command calls
-			# exit. Write, then rename, so the reader never sees a
-			# half-written file.
-			# shellcheck disable=SC2154 # ec is assigned in the same trap
-			trap 'ec=$?; [ "$code" -ne 0 ] || code=$ec
-				printf "%s" "$code" >"$_work/$n.code.part"
-				mv "$_work/$n.code.part" "$_work/$n.code"' EXIT
+			# Always leave a status behind, even for a command that calls
+			# exit itself: whatever ends this shell, the trap sees the
+			# status it ended on. Write, then rename, so a reader never
+			# sees a half-written file.
+			trap '_ec=$?
+				printf "%s" "$_ec" >"$_work/$_n.code.part"
+				mv "$_work/$_n.code.part" "$_work/$_n.code"' EXIT
 
-			for cmd in "$@"; do
-				eval "$cmd" || {
-					code=$?
-					break
-				}
+			# ${1+"$@"} rather than "$@", because a chain may have
+			# been given a label and nothing to do: posh in a
+			# script that set -u calls $@ with no arguments behind
+			# it an unset parameter, and stops there.
+			for _cmd in ${1+"$@"}; do
+				eval "$_cmd" || exit $?
 			done
-		) >"$_work/$n.log" 2>&1 &
+		) >"$_work/$_n.log" 2>&1 </dev/null &
 	} >/dev/null
 
-	printf '%s' "$!" >"$_work/$n.pid"
+	eval "_pid_$_n=\$!"
 
 	if [ "$_groups" = yes ] && [ "$_monitor" = no ]; then set +m; fi
 }
 
 run() {
-	_streaming && _prefixes
+	if _streaming; then _prefixes; fi
 	_await
 	_cancel
-	_streaming && _flush
+	if _streaming; then _emit_all last; fi
 	_report
 	return "$_failed"
 }
@@ -245,87 +320,110 @@ _nap() {
 # Wait for everything, or return early as soon as one chain fails
 _await() {
 	while :; do
-		_streaming && _pump
-		pending=0
-		i=1
-		while [ "$i" -le "$_count" ]; do
-			if [ -f "$_work/$i.code" ]; then
-				_failed=$(cat "$_work/$i.code")
+		if _streaming; then _emit_all now; fi
+		_pending=0
+		_i=1
+		while [ "$_i" -le "$_count" ]; do
+			_note_if_killed "$_i"
+			if [ -f "$_work/$_i.code" ]; then
+				_failed=$(cat "$_work/$_i.code")
 				# `return 0`, not a bare `return`: a bare one hands back
 				# the status of the test above, which aborts `run` in a
 				# script that set -e.
 				[ "$_failed" -eq 0 ] || return 0
 			else
-				pending=$((pending + 1))
+				_pending=$((_pending + 1))
 			fi
-			i=$((i + 1))
+			_i=$((_i + 1))
 		done
-		[ "$pending" -eq 0 ] && return 0
+		if [ "$_pending" -eq 0 ]; then return 0; fi
 		_nap
 	done
 }
 
+# A chain that is gone without having left a status behind was killed from
+# outside: the signal no process can catch, or the machine running out of
+# memory. Nothing is going to write that status now, so the wait above would
+# be for ever; the run has to end, and it has to end as a failure, because a
+# chain that was killed did not do the work it was given.
+#
+# Asked only of a chain that has not reported, and the report is looked for
+# again afterwards: a chain that finished in between wrote its status just
+# after we found the process gone, and that status is the true one. `kill -0`
+# is the whole of the test, because a chain of ours that has ended goes on
+# answering it until it is reaped, and `_cancel` is what reaps.
+_note_if_killed() {
+	if [ -f "$_work/$1.code" ]; then return 0; fi
+	eval "_pid=\$_pid_$1"
+	if kill -0 "$_pid" 2>/dev/null; then return 0; fi
+	if [ -f "$_work/$1.code" ]; then return 0; fi
+
+	: >"$_work/$1.killed"
+	# 137 is what a shell reports for a child that SIGKILL took, and the
+	# report says `killed` rather than this number, which the chain never
+	# chose. It is here because `run` has to return something.
+	printf '%s' 137 >"$_work/$1.code.part"
+	mv "$_work/$1.code.part" "$_work/$1.code"
+}
+
+# Stop whatever is still running, and leave every chain with either a status
+# or a cancellation, which is what lets the report read one or the other
+# without having to allow for neither.
 _cancel() {
-	i=1
-	while [ "$i" -le "$_count" ]; do
-		if [ ! -f "$_work/$i.code" ]; then
-			: >"$_work/$i.cancelled"
-			_kill_chain "$(cat "$_work/$i.pid")" quietly
+	_i=1
+	while [ "$_i" -le "$_count" ]; do
+		if [ ! -f "$_work/$_i.code" ]; then
+			: >"$_work/$_i.cancelled"
+			eval "_pid=\$_pid_$_i"
+			_kill_chain "$_pid" quietly
 		fi
-		i=$((i + 1))
+		_i=$((_i + 1))
 	done
 	wait 2>/dev/null || : # a killed job must not abort a script that set -e
 }
 
 # Whether output is streamed as it arrives rather than held and grouped.
 _streaming() {
-	case ${STREAM:-1} in
+	case $STREAM in
 	'' | 0 | no | off | false) return 1 ;;
 	*) return 0 ;;
 	esac
 }
 
 # The label a streamed line carries, one per chain, right aligned to the
-# longest of them so that the bars line up under each other. Labels are
-# known by the time `run` is called, which is the first moment a width can
-# be worked out, and they are kept in variables because the pump wants them
-# on every poll.
+# longest of them so that the bars line up under each other. Every label is
+# known by the time `run` is called, which is the first moment a width can be
+# worked out at all.
 _prefixes() {
 	_pad=0
-	i=1
-	while [ "$i" -le "$_count" ]; do
-		label=$(cat "$_work/$i.label")
-		[ "${#label}" -gt "$_pad" ] && _pad=${#label}
-		i=$((i + 1))
+	_i=1
+	while [ "$_i" -le "$_count" ]; do
+		eval "_label=\$_label_$_i"
+		if [ "${#_label}" -gt "$_pad" ]; then _pad=${#_label}; fi
+		_i=$((_i + 1))
 	done
 
-	i=1
-	while [ "$i" -le "$_count" ]; do
-		label=$(cat "$_work/$i.label")
-		while [ "${#label}" -lt "$_pad" ]; do label=" $label"; done
-		eval "_label_$i=\$label"
-		i=$((i + 1))
-	done
-}
-
-# What every chain has written since the last look round. The poll is the
-# only thing printing, so two chains that write at the same moment come out
-# as whole lines one after the other rather than mixed into each other.
-_pump() {
-	i=1
-	while [ "$i" -le "$_count" ]; do
-		_emit "$i" now
-		i=$((i + 1))
+	_i=1
+	while [ "$_i" -le "$_count" ]; do
+		eval "_label=\$_label_$_i"
+		_prefix=$(printf "%${_pad}s" "$_label")
+		eval "_prefix_$_i=\$_prefix"
+		_i=$((_i + 1))
 	done
 }
 
-# The rest of it, once the chains are done: what the last poll did not get
-# to, and the final line of a chain that ended without a newline.
-_flush() {
-	i=1
-	while [ "$i" -le "$_count" ]; do
-		_emit "$i" last
-		i=$((i + 1))
+# What every chain has written since the last look round, or, with `last`,
+# the rest of it, once the chains are done. The poll is the only thing
+# printing, so two chains that write at the same moment come out as whole
+# lines one after the other rather than mixed into each other.
+#
+# Its own counter, because the wait loop calls this from inside a loop of
+# its own and POSIX sh has no local variables.
+_emit_all() {
+	_e=1
+	while [ "$_e" -le "$_count" ]; do
+		_emit "$_e" "$1"
+		_e=$((_e + 1))
 	done
 }
 
@@ -334,30 +432,34 @@ _flush() {
 # that has no newline yet is left where it is, so a line written in two goes
 # out in one piece instead of as two labelled halves. `read` fails on that
 # partial line without counting it, which is what leaves it to be read again
-# next time round — until `last`, when there is no next time and what is
+# next time round, until `last`, when there is no next time and what is
 # there is all there will be.
 #
 # The loop reads a file rather than a pipe on purpose: a pipe would put it
-# in a subshell in most shells, and the count it keeps would go with it.
+# in a subshell in most shells, and the count it keeps would go with it. The
+# chunk is the one file here that is written more than once, so it is the one
+# redirection that has to say it means to overwrite: a calling script that
+# set -C would otherwise lose every line after the first poll.
 _emit() {
-	n=$1
-	eval "seen=\${_seen_$n:-0} label=\$_label_$n"
-	tail -n "+$((seen + 1))" "$_work/$n.log" \
-		>"$_work/$n.chunk" 2>/dev/null || return 0
+	_n=$1
+	eval "_seen=\${_seen_$_n:-0}"
+	eval "_prefix=\$_prefix_$_n"
+	tail -n "+$((_seen + 1))" "$_work/$_n.log" \
+		>|"$_work/$_n.chunk" 2>/dev/null || return 0
 
-	line=''
-	while IFS= read -r line; do
-		printf '%s %s %s\n' "$label" "$STREAM_SEP" "$line"
-		seen=$((seen + 1))
-		line=''
-	done <"$_work/$n.chunk"
+	_line=''
+	while IFS= read -r _line; do
+		printf '%s %s %s\n' "$_prefix" "$STREAM_SEP" "$_line"
+		_seen=$((_seen + 1))
+		_line=''
+	done <"$_work/$_n.chunk"
 
-	if [ -n "$line" ] && [ "$2" = last ]; then
-		printf '%s %s %s\n' "$label" "$STREAM_SEP" "$line"
-		seen=$((seen + 1))
+	if [ -n "$_line" ] && [ "$2" = last ]; then
+		printf '%s %s %s\n' "$_prefix" "$STREAM_SEP" "$_line"
+		_seen=$((_seen + 1))
 	fi
 
-	eval "_seen_$n=\$seen"
+	eval "_seen_$_n=\$_seen"
 }
 
 _report() {
@@ -365,41 +467,59 @@ _report() {
 	# run says nothing at the end about a chain that finished, and chains
 	# are cancelled by a failure and by nothing else, so a run that failed
 	# is exactly a run with something left to say.
-	_streaming && [ "$_failed" -ne 0 ] && printf '\n'
-	i=1
-	while [ "$i" -le "$_count" ]; do
-		label=$(cat "$_work/$i.label")
-		code=""
-		[ -f "$_work/$i.code" ] && code=$(cat "$_work/$i.code")
+	if _streaming && [ "$_failed" -ne 0 ]; then printf '\n'; fi
 
-		if [ -f "$_work/$i.cancelled" ]; then
-			mark="..."
-			code=""
-		elif [ "$code" = 0 ]; then
-			mark="---"
-		else
-			mark="[!]"
-		fi
-
+	_i=1
+	while [ "$_i" -le "$_count" ]; do
 		if _streaming; then
 			# Only what the output did not already say. A chain that
 			# finished said so line by line as it went, and a heading with
 			# nothing under it is a heading for nothing; what is left is
 			# the chain that failed and the chains that went down with it.
-			# The lines are the ones the grouped report ends a chain on, so
-			# a build that greps for one finds it either way.
-			if [ -f "$_work/$i.cancelled" ]; then
-				printf '[.] %s cancelled\n' "$label"
-			elif [ -n "$code" ] && [ "$code" -ne 0 ]; then
-				printf '[!] %s exited %s\n' "$label" "$code"
-			fi
+			_outcome "$_i"
 		else
-			printf '\n%s %s\n' "$mark" "$label"
-			cat "$_work/$i.log"
-			[ -n "$code" ] && [ "$code" -ne 0 ] &&
-				printf '[!] %s exited %s\n' "$label" "$code"
-			[ -f "$_work/$i.cancelled" ] && printf '[.] %s cancelled\n' "$label"
+			_group "$_i"
 		fi
-		i=$((i + 1))
+		_i=$((_i + 1))
 	done
+}
+
+# How a chain ended, or nothing at all if it simply worked. Both reports end
+# a chain on this line, so a build that greps for one finds it either way.
+_outcome() {
+	eval "_label=\$_label_$1"
+	if [ -f "$_work/$1.cancelled" ]; then
+		printf '[.] %s cancelled\n' "$_label"
+	elif [ -f "$_work/$1.killed" ]; then
+		printf '[!] %s killed\n' "$_label"
+	else
+		_code=$(cat "$_work/$1.code")
+		case $_code in
+		0) ;;
+		*) printf '[!] %s exited %s\n' "$_label" "$_code" ;;
+		esac
+	fi
+}
+
+# One chain's whole output under a heading of its own, which is what STREAM=0
+# asks for.
+_group() {
+	if [ -f "$_work/$1.cancelled" ]; then
+		_mark='...'
+	elif [ "$(cat "$_work/$1.code")" = 0 ]; then
+		_mark='---'
+	else
+		_mark='[!]'
+	fi
+
+	eval "_label=\$_label_$1"
+	printf '\n%s %s\n' "$_mark" "$_label"
+	cat "$_work/$1.log"
+	# A chain whose last line never got a newline would otherwise have the
+	# line below glued onto the end of it.
+	case $(tail -c 1 "$_work/$1.log" 2>/dev/null) in
+	'') ;;
+	*) printf '\n' ;;
+	esac
+	_outcome "$1"
 }

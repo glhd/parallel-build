@@ -48,6 +48,96 @@ Describe 'parallel.sh'
 			The line 1 of output should equal "only | the one output"
 			The output should not include "--- only"
 		End
+
+		# The label and the bar are the only thing added to a line. What a
+		# command wrote is what comes out, whatever it happens to look like:
+		# a printf format, an option, a backslash, the spaces at either end.
+		It 'prints what a chain wrote and nothing else'
+			Data
+				#|set -eu
+				#|STREAM_SEP='|'
+				#|. "$LIB"
+				#|chain "odd" "printf '%s\n' '100% sure' '-n' 'a\\backslash' '  indented' 'two  spaces'"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			The line 1 of output should equal "odd | 100% sure"
+			The line 2 of output should equal "odd | -n"
+			The line 3 of output should equal "odd | a\\backslash"
+			The line 4 of output should equal "odd |   indented"
+			The line 5 of output should equal "odd | two  spaces"
+		End
+	End
+
+	# What a build declares, and the answers to declaring nothing much at all.
+	Describe 'declaring chains'
+		It 'has nothing to say when no chain was declared'
+			Data
+				#|set -eu
+				#|. "$LIB"
+				#|run
+				#|printf 'run returned %s\n' "$?"
+			End
+
+			When call driver
+			The status should equal 0
+			The output should equal "run returned 0"
+		End
+
+		It 'runs a chain that was given nothing to do'
+			Data
+				#|set -eu
+				#|. "$LIB"
+				#|chain "idle"
+				#|run
+				#|printf 'run returned %s\n' "$?"
+			End
+
+			When call driver
+			The status should equal 0
+			The output should equal "run returned 0"
+		End
+
+		# A chain needs a label, because the label is how its output is
+		# named. Saying so beats the shell's own complaint about $1.
+		It 'refuses a chain with no label'
+			Data
+				#|set -eu
+				#|. "$LIB"
+				#|chain || printf 'chain returned %s\n' "$?"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			The output should equal "chain returned 2"
+			The stderr should include "chain needs a label"
+		End
+
+		It 'keeps a dozen chains apart'
+			Data
+				#|set -eu
+				#|STREAM_SEP='|'
+				#|. "$LIB"
+				#|i=1
+				#|while [ "$i" -le 12 ]; do
+				#|	chain "chain-$i" "printf 'from %s\n' $i"
+				#|	i=$((i + 1))
+				#|done
+				#|run >"$WORK/out"
+				#|cat "$WORK/out"
+				#|printf 'lines %s\n' "$(grep -c 'from ' "$WORK/out")"
+			End
+
+			When call driver
+			The status should equal 0
+			The output should include " chain-1 | from 1"
+			The output should include "chain-12 | from 12"
+			# One line a chain, and every one of them accounted for.
+			The output should include "lines 12"
+		End
 	End
 
 	Describe 'ordering within a chain'
@@ -172,6 +262,222 @@ Describe 'parallel.sh'
 			The output should include "[.] slow cancelled"
 			The value "$(process_state "$WORK/childpid")" should equal "stopped"
 		End
+
+		# Cancelling asks a chain to go and then waits for it, so that the
+		# chain is gone before the group it leads is taken and there is
+		# nobody left to announce the killing. A chain that never answers
+		# would hold that wait, and the build, open for ever. It gets GRACE
+		# polls and then the signal nothing can ignore.
+		#
+		# GRACE is five here only so the example does not sit through the
+		# default; what is being tested is that the wait ends at all.
+		It 'gives up on a chain that will not answer the signal'
+			Data
+				#|set -eu
+				#|GRACE=5
+				#|. "$LIB"
+				#|chain "deaf" \
+				#|	"trap '' TERM; touch '$WORK/deaf-started'" \
+				#|	"until [ -f '$WORK/done' ] || [ ! -d '$WORK' ]; do sleep 1; done"
+				#|chain "quick" \
+				#|	"until [ -f '$WORK/deaf-started' ]; do sleep 1; done" \
+				#|	"exit 8"
+				#|run
+			End
+
+			When call driver
+			The status should equal 8
+			The output should include "[.] deaf cancelled"
+			# The driver reached its own end rather than being killed by
+			# the harness, which is the whole of the claim.
+			The stderr should not include "did not finish within"
+		End
+	End
+
+	# A chain is a process, and a process can be taken away: the signal no
+	# process can catch, the machine running out of memory. It leaves no
+	# status behind when it goes, and nothing is ever going to write one, so
+	# waiting for one is waiting for ever.
+	Describe 'a chain that is killed from outside'
+		It 'reports it rather than waiting for a status that will never come'
+			Data
+				#|set -eu
+				#|. "$LIB"
+				#|chain "victim" \
+				#|	"until [ -f '$WORK/done' ] || [ ! -d '$WORK' ]; do sleep 1; done"
+				#|printf '%s\n' "$!" >"$WORK/chainpid"
+				#|( sleep 1; kill -9 "$(cat "$WORK/chainpid")" ) &
+				#|run
+			End
+
+			When call driver
+			# 137 is what a shell reports for a child SIGKILL took, and is
+			# here because `run` has to return something. What the report
+			# says is that the chain was killed, which is what happened.
+			The status should equal 137
+			The output should include "[!] victim killed"
+			The stderr should not include "did not finish within"
+		End
+	End
+
+	# A build script is entitled to its own shell options and its own
+	# variables, and the library is a guest in that shell.
+	Describe 'the script that sourced it'
+		It "leaves the caller's own variables alone"
+			Data
+				#|set -eu
+				#|. "$LIB"
+				#|i=alpha n=beta cmd=gamma code=delta label=epsilon
+				#|mark=zeta seen=eta line=theta pending=iota pad=kappa ec=lambda
+				#|chain "guest" "printf 'ran\n'"
+				#|run >/dev/null
+				#|printf '%s\n' "$i $n $cmd $code $label $mark $seen $line $pending $pad $ec"
+			End
+
+			When call driver
+			The status should equal 0
+			The line 1 of output should equal \
+				"alpha beta gamma delta epsilon zeta eta theta iota kappa lambda"
+		End
+
+		# noclobber turns every plain > into a refusal to overwrite, and the
+		# library rewrites one file on every poll. Without saying that it
+		# means to, a build that set -C would lose every line after the
+		# first one and get a complaint a poll instead.
+		It 'streams under a caller that set -C'
+			Data
+				#|set -euC
+				#|STREAM_SEP='|'
+				#|. "$LIB"
+				#|chain "first" "printf 'the first line\n'"
+				#|chain "second" \
+				#|	"until grep -q 'the first line' '$WORK/out' 2>/dev/null ||
+				#|		[ ! -d '$WORK' ]; do sleep 1; done" \
+				#|	"printf 'the second line\n'"
+				#|run >"$WORK/out"
+				#|cat "$WORK/out"
+			End
+
+			When call driver
+			The status should equal 0
+			# The second chain only writes once it has seen the first
+			# chain's line already printed, so both lines here means at
+			# least two polls wrote a chunk, and the second one worked.
+			The output should include " first | the first line"
+			The output should include "second | the second line"
+			The stderr should equal ""
+		End
+
+		It 'groups under a caller that set -C'
+			Data
+				#|set -euC
+				#|STREAM=0
+				#|. "$LIB"
+				#|chain "slow" \
+				#|	"touch '$WORK/slow-started'" \
+				#|	"until [ -f '$WORK/done' ] || [ ! -d '$WORK' ]; do sleep 1; done"
+				#|chain "broken" \
+				#|	"until [ -f '$WORK/slow-started' ]; do sleep 1; done" \
+				#|	"exit 2"
+				#|run
+			End
+
+			When call driver
+			The status should equal 2
+			The output should include "[.] slow cancelled"
+			The output should include "[!] broken exited 2"
+			The stderr should equal ""
+		End
+
+		# Nothing a chain runs has any business reading the build's input,
+		# and a shell with job control would otherwise hand it over: the
+		# chain would eat what the script was going to read.
+		It "leaves the build's stdin to the build"
+			Data
+				#|set -eu
+				#|printf 'first line\nsecond line\n' >"$WORK/input"
+				#|exec <"$WORK/input"
+				#|. "$LIB"
+				#|chain "greedy" "cat >'$WORK/eaten'"
+				#|run >/dev/null
+				#|printf 'the script read: '
+				#|head -n 1
+			End
+
+			When call driver
+			The status should equal 0
+			The output should equal "the script read: first line"
+			The value "$(cat "$WORK/eaten")" should equal ""
+		End
+	End
+
+	# A command in a chain runs in the chain's own shell, so the names that
+	# shell is using are names the command can take away. Everything the
+	# library keeps there starts with an underscore for that reason: a build
+	# step counting with `i`, or keeping a status in `code`, would otherwise
+	# move the file the chain reports itself through and leave `run` waiting
+	# on a chain that had already finished.
+	Describe 'a chain command that uses ordinary variable names'
+		It 'runs and reports like any other'
+			Data
+				#|set -eu
+				#|STREAM_SEP='|'
+				#|. "$LIB"
+				#|chain "common" \
+				#|	"i=3 n=99 code=7 cmd=x label=y work=z; printf 'one\n'" \
+				#|	"printf 'two\n'"
+				#|run
+				#|printf 'run returned %s\n' "$?"
+			End
+
+			When call driver
+			The status should equal 0
+			The output should include "common | one"
+			The output should include "common | two"
+			The output should include "run returned 0"
+			The stderr should not include "did not finish within"
+		End
+	End
+
+	# The bar between a label and its line is a box drawing character where
+	# the locale says the terminal can show one, and an ASCII pipe where it
+	# does not. The library reads the locale rather than assuming it, and it
+	# is written in ASCII itself so that a shell reading it in the C locale
+	# has nothing to choke on.
+	Describe 'the locale'
+		It 'uses an ASCII bar where the locale is not UTF-8'
+			Data
+				#|set -eu
+				#|LC_ALL=C
+				#|export LC_ALL
+				#|. "$LIB"
+				#|chain "one" "printf 'a line\n'"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			The line 1 of output should equal "one | a line"
+		End
+
+		It 'uses a box drawing bar where the locale is UTF-8'
+			Data
+				#|set -eu
+				#|LC_ALL=C.UTF-8
+				#|export LC_ALL
+				#|. "$LIB"
+				#|chain "one" "printf 'a line\n'"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			The line 1 of output should equal "one $(printf '\342\224\202') a line"
+			# A shell without that locale installed says so, and the bar is
+			# chosen from the name rather than from the locale itself, so
+			# the complaint changes nothing here.
+			The stderr should not include "did not finish within"
+		End
 	End
 
 	# STREAM=0 holds each chain's output and prints it in one block instead,
@@ -219,6 +525,24 @@ Describe 'parallel.sh'
 			The line 5 of output should equal "[!] broken"
 			The line 6 of output should equal "the reason"
 			The line 7 of output should equal "[!] broken exited 2"
+		End
+
+		# A chain whose last line never got a newline would otherwise have
+		# the line below it printed onto the end of it.
+		It 'keeps the closing line off the end of an unfinished one'
+			Data
+				#|set -eu
+				#|STREAM=0
+				#|. "$LIB"
+				#|chain "abrupt" "printf 'no newline here'; exit 5"
+				#|run
+			End
+
+			When call driver
+			The status should equal 5
+			The line 2 of output should equal "[!] abrupt"
+			The line 3 of output should equal "no newline here"
+			The line 4 of output should equal "[!] abrupt exited 5"
 		End
 
 		It "collects a command's stdout and stderr into its own group"
@@ -307,6 +631,54 @@ Describe 'parallel.sh'
 	End
 
 	Describe 'cleanup'
+		# Everything the library keeps is under one directory, so there is
+		# nowhere for its bookkeeping to go if it cannot have one. Without
+		# saying so it would write `1.log` and `1.code` into whatever
+		# directory the build happened to be run from.
+		It 'stops rather than scatter its files when it can have no temp directory'
+			Skip if "this shell brings its own mktemp, so a fake cannot stand in for it" mktemp_is_builtin
+
+			Data
+				#|set -eu
+				#|mkdir -p "$WORK/bin"
+				#|printf '#!/bin/sh\nexit 1\n' >"$WORK/bin/mktemp"
+				#|chmod +x "$WORK/bin/mktemp"
+				#|PATH="$WORK/bin:$PATH"
+				#|export PATH
+				#|cd "$WORK"
+				#|. "$LIB"
+				#|printf 'kept going\n'
+			End
+
+			When call driver
+			The status should equal 1
+			The output should not include "kept going"
+			The stderr should include "could not create a temporary directory"
+			The file "$WORK/1.log" should not be exist
+		End
+
+		# TMPDIR is wherever the machine says, and on a laptop that is a
+		# path with a space in it often enough.
+		It 'works where the temp directory has a space in its path'
+			Data
+				#|set -eu
+				#|STREAM_SEP='|'
+				#|mkdir -p "$WORK/a spaced dir"
+				#|TMPDIR="$WORK/a spaced dir"
+				#|export TMPDIR
+				#|. "$LIB"
+				#|printf '%s\n' "$_work" >"$WORK/workdir"
+				#|chain "one" "printf 'a line\n'"
+				#|run
+			End
+
+			When call driver
+			The status should equal 0
+			The line 1 of output should equal "one | a line"
+			The value "$(reported_workdir)" should include "a spaced dir"
+			The directory "$(reported_workdir)" should not be exist
+		End
+
 		It 'removes its temp directory on a normal exit'
 			Data
 				#|set -eu
@@ -341,9 +713,9 @@ Describe 'parallel.sh'
 
 		# A signal is the one way out that the cancel path never sees, so
 		# unless the library stops the chains itself an interrupted build
-		# leaves whatever it started still running. That is its own bug —
-		# the point of Ctrl-C is that the compiler stops too — and it is
-		# also what stalls CI: a macOS runner does not finish a step while
+		# leaves whatever it started still running. That is its own bug,
+		# since the point of Ctrl-C is that the compiler stops too, and it
+		# is also what stalls CI: a macOS runner does not finish a step while
 		# a process the step started is alive, so a chain nobody killed
 		# holds the job open until it times out, minutes after the suite
 		# has passed.
@@ -480,6 +852,29 @@ Describe 'parallel.sh'
 			The output should not include "--- fine"
 			The output should include "[.] slow cancelled"
 			The output should include "[!] broken exited 3"
+		End
+
+		# The poll is the only thing printing, so two chains that write at
+		# the same moment come out as whole lines one after the other
+		# rather than as halves of each other.
+		It 'keeps the lines whole when two chains write at once'
+			Data
+				#|set -eu
+				#|STREAM_SEP='|'
+				#|. "$LIB"
+				#|chain "aaa" \
+				#|	"i=0; while [ \$i -lt 300 ]; do printf 'AAAAAAAAAA\n'; i=\$((i + 1)); done"
+				#|chain "bbb" \
+				#|	"i=0; while [ \$i -lt 300 ]; do printf 'BBBBBBBBBB\n'; i=\$((i + 1)); done"
+				#|run >"$WORK/out"
+				#|printf 'lines %s, malformed %s\n' \
+				#|	"$(grep -c . "$WORK/out")" \
+				#|	"$(grep -cv '^\(aaa\|bbb\) | [AB]\{10\}$' "$WORK/out" || true)"
+			End
+
+			When call driver
+			The status should equal 0
+			The output should equal "lines 600, malformed 0"
 		End
 
 		It "labels what a command writes to stderr as well"
