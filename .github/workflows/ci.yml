@@ -33,6 +33,10 @@ jobs:
           - shell: bash
             package: bash
             path: /bin/bash
+          # bash in POSIX mode, which is what /bin/sh is on a lot of machines.
+          - shell: bash --posix
+            package: bash
+            path: /bin/bash --posix
           - shell: ksh93
             package: ksh
             path: /bin/ksh93
@@ -42,6 +46,17 @@ jobs:
           - shell: zsh
             package: zsh
             path: /bin/zsh
+          # zsh emulating sh, which turns on word splitting and the POSIX
+          # builtins and is a different shell for everything here.
+          - shell: zsh --emulate sh
+            package: zsh
+            path: /bin/zsh --emulate sh
+          # Debian's policy-compliant shell: no more than POSIX, which is
+          # what makes it worth asking. It is the one that objected to $@
+          # with nothing behind it.
+          - shell: posh
+            package: posh
+            path: /bin/posh
           - shell: busybox ash
             package: busybox-static
             path: /usr/local/bin/ash
@@ -56,7 +71,8 @@ jobs:
         if: matrix.package == 'busybox-static'
         run: sudo ln -sf /bin/busybox /usr/local/bin/ash
       - run: make install-dev
-      - run: make test SHELLSPEC_FLAGS="--shell ${{ matrix.path }}"
+      # Quoted, because a shell here may come with options after it.
+      - run: make test SHELLSPEC_FLAGS='--shell "${{ matrix.path }}"'
 
   # BSD mktemp and BSD sleep, and a /bin/sh that is bash 3.2 in disguise.
   macos:
@@ -66,11 +82,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shell: [/bin/sh, /bin/bash]
+        shell: [/bin/sh, /bin/bash, /bin/zsh]
     steps:
       - uses: actions/checkout@v7
       - run: make install-dev
-      - run: make test SHELLSPEC_FLAGS="--shell ${{ matrix.shell }}"
+      - run: make test SHELLSPEC_FLAGS='--shell "${{ matrix.shell }}"'
 
   # The benchmarks are a report, and a hosted runner is a noisy place to
   # take timings on, so the job only fails when a scenario was not faster in

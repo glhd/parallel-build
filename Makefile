@@ -16,14 +16,22 @@ SCRIPTS = parallel.sh examples/build.sh bench/bench.sh
 # nesting to keep and flattens the whole file to one column.
 SPECS = spec/parallel_spec.sh spec/spec_helper.sh
 
-.PHONY: check lint test bench install-dev
+.PHONY: check lint ascii test bench install-dev
 
 check: lint test
 
-lint:
+lint: ascii
 	shellcheck --shell=sh $(SCRIPTS) $(SPECS)
 	checkbashisms $(SCRIPTS)
 	shfmt -ln posix -d $(SCRIPTS)
+
+# Nothing here is anything but printable ASCII, comments included. A shell
+# reads a script through the locale, and yash in the C locale refuses one
+# carrying a byte sequence that locale cannot make a character of, which is
+# the locale a build container has when nobody set one. The box drawing bar
+# is written as its bytes in the one place it is needed.
+ascii:
+	! LC_ALL=C grep -n '[^[:print:][:blank:]]' $(SCRIPTS) $(SPECS)
 
 test:
 	@[ -x $(SHELLSPEC) ] || { echo "$(SHELLSPEC) is missing: make install-dev" >&2; exit 1; }

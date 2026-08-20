@@ -24,11 +24,14 @@ After:
 set -e
 . ./parallel.sh
 
-chain "composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader"
-chain "npm ci --audit false" "npm run build"
+chain "composer install" \
+	"composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader"
+chain "npm build" "npm ci --audit false" "npm run build"
 
 run
 ```
+
+The first argument is what the chain is called; the rest are what it runs.
 
 Drawn out, with the times off a middling Laravel app. The second one
 finishes when its longest chain does rather than when its last command
@@ -81,7 +84,7 @@ composer install │ Generating optimized autoload files
        npm build │ ERR! Build failed in 4.21s
 
 [!] npm build exited 1
-[.] assets cancelled
+[.] composer install cancelled
 ```
 
 A line is printed once it is whole, so a command that writes a line in two
@@ -121,8 +124,32 @@ that code, it can be the last line of a build script:
 run
 ```
 
-Nothing else is public. `chain` and `run` are meant to be called once each,
-in that order.
+Nothing else is public. `chain` may be called as often as a build has chains
+to declare, and `run` once, after them.
+
+A chain that did not simply work ends on one of three lines, and both layouts
+use the same ones, so a build that greps for one finds it either way:
+
+- `[!] npm build exited 1` — the chain failed, and this is the code it failed
+  with.
+- `[.] npm build cancelled` — it was still running when another chain failed.
+- `[!] npm build killed` — it was taken away before it could report: the
+  signal nothing can catch, or the machine running out of memory. `run`
+  returns 137 for it, which is what a shell reports for a child SIGKILL took.
+
+Some smaller things worth knowing:
+
+- A chain reads its input from `/dev/null`, so nothing it runs can take what
+  the build script was going to read.
+- `chain` with no label at all writes to stderr and returns 2, which stops a
+  `set -e` build where it stands.
+- The library takes the `EXIT`, `INT` and `TERM` traps for itself, which is
+  how it takes the chains down with it and clears up after them. A build with
+  traps of its own should set them before sourcing, and expect them to be
+  replaced.
+- Every name it defines starts with an underscore, apart from `chain`, `run`
+  and the settings below. Nothing else in the calling script or in a chain's
+  commands is touched.
 
 ## POLL
 
@@ -142,6 +169,22 @@ not in bash or zsh, so `POLL=0.5 . ./parallel.sh` is two different things
 depending on where it runs. The environment works everywhere too, so
 `POLL=0.5 ./build.sh` on a script that sources the library is the other way
 to do it.
+
+## GRACE
+
+A cancelled chain is asked to stop and then waited for, so that it is gone
+before the process group it leads is taken down and there is nobody left to
+announce the killing. `GRACE` is how many polls it gets before the signal
+nothing can ignore, a hundred of them by default, which at the default `POLL`
+is about ten seconds:
+
+```sh
+GRACE=300
+. ./parallel.sh
+```
+
+Without a bound, a build step that ignores `SIGTERM` would hold `run` open
+with no way out but Ctrl-C.
 
 ## STREAM
 
@@ -163,9 +206,6 @@ Generating optimized autoload files
 added 214 packages
 building for production...
 [!] npm build exited 1
-
-... assets
-[.] assets cancelled
 ```
 
 `STREAM_SEP` is the bar between a label and its line. It defaults to `│`
@@ -249,15 +289,45 @@ Fractional `sleep` is not in POSIX, though both GNU coreutils and BSD accept
 it. Whole seconds are the fallback, not the default, so a build on a shell
 without fractional sleep finishes up to a second later than it might.
 
+The file itself is ASCII, comments included, and the box drawing bar is
+written as its bytes in the one place it is needed. A shell reads a script
+through the locale, and a strict one in the C locale refuses a file carrying
+a byte sequence that locale cannot make a character of, which is the locale a
+build container has when nobody has set one. `make lint` checks it.
+
 Under zsh, a script with `set -e` whose `run` fails leaves the temp
 directory behind: zsh skips `EXIT` traps when errexit is triggered by a
 function returning non-zero. Every other shell, and every other exit path
 under zsh, removes it.
 
-The library has no `local`, because POSIX sh has none. It keeps its own
-state in names starting with `_`, but its loops use `i`, `n`, `cmd`, `code`,
-`label`, `mark`, `seen`, `line` and `pending`, and sourcing it will clobber
-those in the calling script.
+The library has no `local`, because POSIX sh has none. Every name it uses
+starts with an underscore instead, including its loop counters, so a calling
+script and a chain's commands can use whatever they like as long as it does
+not start with one.
+
+A chain that something else kills is announced by bash as well as by the
+report: bash prints a line about the job to stderr when it reaps one that a
+signal ended, and there is no asking it not to. No other shell here says
+anything, and it only happens when a chain is taken from outside, which is
+worth a line either way.
+
+## Shells
+
+The suite runs under every shell below, on every push. The library is written
+for what they have in common, which is POSIX and not much more:
+
+| Where | Shells |
+| --- | --- |
+| Linux | dash, bash, bash `--posix`, ksh93, mksh, zsh, zsh `--emulate sh`, posh, busybox ash |
+| macOS | `/bin/sh` (bash 3.2), bash, zsh |
+| FreeBSD | `/bin/sh` |
+
+posh is Debian's policy-compliant shell, which is POSIX and deliberately
+nothing else; it is the one that objected to `"$@"` with no arguments behind
+it. bash in POSIX mode and zsh emulating sh are there because that is what
+`/bin/sh` is on a good many machines, and both differ from their own default
+mode in ways this library can feel. yash is not in the list: it is stricter
+still, and the library does run under it, but shellspec cannot drive it here.
 
 ## Prior art
 
