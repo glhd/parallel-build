@@ -1,0 +1,23 @@
+{
+  "name": "parallel-build-video",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Remotion project that renders the parallel.sh demo video",
+  "scripts": {
+    "dev": "remotion studio",
+    "render": "remotion render",
+    "still": "remotion still"
+  },
+  "dependencies": {
+    "@fontsource/inter": "5.1.0",
+    "@fontsource/jetbrains-mono": "5.1.1",
+    "@remotion/cli": "4.0.514",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "remotion": "4.0.514"
+  },
+  "devDependencies": {
+    "@types/react": "19.0.0",
+    "typescript": "5.6.3"
+  }
+}

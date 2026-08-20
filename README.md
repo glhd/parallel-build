@@ -7,6 +7,11 @@ the first failure, and labels every line it prints with the chain it came
 from, as that chain writes it. It is POSIX sh, one file, and nothing else,
 so it runs in a build container as it is.
 
+![A Laravel build run in order and run in chains](video/dist/parallel-build.gif)
+
+That is a real Laravel app with a React front end, run both ways. How the film
+was made, and where its numbers come from, is in [`video/`](video).
+
 Before, where `npm` waits on `composer` for no reason:
 
 ```sh
