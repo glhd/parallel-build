@@ -253,8 +253,8 @@ each one overrules the one before it:
 COLOR=1 ./build.sh | tee build.log
 ```
 
-`COLOR_PALETTE` is the colours themselves, as SGR parameters, handed out in
-declaration order and started again from the top once a build has more chains
+`COLOR_PALETTE` is the colours themselves, a space separated list of SGR
+parameters, handed out in declaration order and started again from the top once a build has more chains
 than the palette has colours. It defaults to cyan, magenta, green, yellow and
 blue: the colours a terminal has had since it had eight of them, less red,
 which belongs to what a build says about its own failures, and less black and

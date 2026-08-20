@@ -474,21 +474,22 @@ _probe_color() {
 # there are any to hand out is not known until `run` has looked at where the
 # output is going.
 #
-# The palette is a list in a string, POSIX sh having nothing better, and the
-# positional parameters are where it is worked through: they are the one list
-# a function of no arguments has to itself, and `shift` walks it without a
-# counter. Refilled from the palette each time it runs out, which is what
-# makes a sixth chain cyan again.
+# The palette is a list in a string, POSIX sh having nothing better, and it is
+# taken a word at a time with the expansions that trim a string rather than by
+# letting the shell split it on the spaces: zsh does not split an unquoted
+# expansion at all, and what that came to was the whole palette arriving as
+# one colour. Refilled each time it runs out, which is what makes a sixth
+# chain cyan again.
 _colors() {
 	case $_colored in
 	no) return 0 ;;
 	esac
 
-	# shellcheck disable=SC2086 # the palette is a list, and splitting it is the point
-	set -- $COLOR_PALETTE
+	_rest=$COLOR_PALETTE
+	_trim_palette
 	# Nothing to hand out, so nothing is coloured, and the reset that
 	# closes a colour has nothing left to close.
-	if [ "$#" -eq 0 ]; then
+	if [ -z "$_rest" ]; then
 		_colored=no
 		_reset=''
 		return 0
@@ -496,14 +497,28 @@ _colors() {
 
 	_i=1
 	while [ "$_i" -le "$_count" ]; do
-		if [ "$#" -eq 0 ]; then
-			# shellcheck disable=SC2086 # as above
-			set -- $COLOR_PALETTE
+		if [ -z "$_rest" ]; then
+			_rest=$COLOR_PALETTE
+			_trim_palette
 		fi
-		_open="${_esc}[$1m"
-		shift
+		_sgr=${_rest%% *}
+		_rest=${_rest#"$_sgr"}
+		_trim_palette
+		_open="${_esc}[${_sgr}m"
 		eval "_color_$_i=\$_open"
 		_i=$((_i + 1))
+	done
+}
+
+# The spaces off the front of what is left of the palette, so that the next
+# word off it is a colour and never the nothing between two spaces, and so
+# that a palette of nothing but spaces reads as the empty one it is.
+_trim_palette() {
+	while :; do
+		case $_rest in
+		' '*) _rest=${_rest# } ;;
+		*) return 0 ;;
+		esac
 	done
 }
 
